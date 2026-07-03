@@ -1,0 +1,407 @@
+/* Lore Agent — panel styled with SillyTavern theme variables.
+   NOTE: the floating editor window is 100% inline-styled in index.js on
+   purpose (stale cached CSS must never be able to break it). This file only
+   styles the main panel. After updating the extension, hard-refresh /
+   clear cached images so this file reloads. */
+
+#la_panel {
+    position: fixed;
+    top: 60px;
+    right: 12px;
+    width: 420px;
+    height: 66vh;
+    min-width: 300px;
+    min-height: 280px;
+    max-width: 96vw;
+    max-height: 92vh;
+    display: none;
+    flex-direction: column;
+    z-index: 3000;
+    resize: both;
+    overflow: hidden;
+    border-radius: 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    background-color: var(--SmartThemeBlurTintColor, rgba(23, 23, 23, 0.95));
+    color: var(--SmartThemeBodyColor, #dcdcdc);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(calc(var(--blurStrength, 10) * 1px));
+    font-size: 0.95em;
+}
+
+#la_panel.la_open {
+    display: flex;
+}
+
+#la_header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    cursor: move;
+    user-select: none;
+    touch-action: none;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    flex: 0 0 auto;
+}
+
+#la_header .la_title {
+    font-weight: 600;
+    flex: 0 0 auto;
+}
+
+#la_header .la_sub {
+    opacity: 0.65;
+    font-size: 0.85em;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#la_header .la_hbtn {
+    cursor: pointer;
+    opacity: 0.75;
+    padding: 2px 6px;
+    flex: 0 0 auto;
+}
+
+#la_header .la_hbtn:hover {
+    opacity: 1;
+}
+
+/* Document bar */
+#la_docbar {
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
+}
+
+#la_docbar .la_dbrow {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+#la_docbar .la_dbrow + .la_dbrow {
+    margin-top: 6px;
+}
+
+#la_docbar select {
+    flex: 1 1 45%;
+    min-width: 0;
+    background-color: rgba(0, 0, 0, 0.25);
+    color: inherit;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.25));
+    border-radius: 5px;
+    padding: 4px 6px;
+    font-size: 0.85em;
+}
+
+/* Settings drawer */
+#la_settings {
+    display: none;
+    flex: 0 0 auto;
+    max-height: 50%;
+    overflow-y: auto;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+}
+
+#la_settings.la_open {
+    display: block;
+}
+
+#la_settings label {
+    display: block;
+    margin: 6px 0 2px;
+    font-size: 0.85em;
+    opacity: 0.85;
+}
+
+#la_settings input[type="text"],
+#la_settings input[type="number"],
+#la_settings select,
+#la_settings textarea {
+    width: 100%;
+    box-sizing: border-box;
+    background-color: rgba(0, 0, 0, 0.25);
+    color: inherit;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    border-radius: 5px;
+    padding: 4px 6px;
+    font-size: 0.9em;
+}
+
+#la_settings textarea {
+    min-height: 110px;
+    resize: vertical;
+    font-family: monospace;
+}
+
+#la_settings .la_row {
+    display: flex;
+    gap: 8px;
+}
+
+#la_settings .la_row > div {
+    flex: 1 1 0;
+}
+
+#la_settings .la_check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    font-size: 0.9em;
+}
+
+#la_settings .la_presethead {
+    margin-top: 10px;
+}
+
+#la_settings .la_presetbtns {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+
+#la_settings .la_hint {
+    margin-top: 8px;
+    font-size: 0.75em;
+    opacity: 0.55;
+}
+
+/* Chat log */
+#la_log {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.la_bubble {
+    max-width: 92%;
+    padding: 6px 10px;
+    border-radius: 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.35;
+}
+
+.la_bubble.la_user {
+    align-self: flex-end;
+    background-color: rgba(255, 255, 255, 0.10);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
+}
+
+.la_bubble.la_ai {
+    align-self: flex-start;
+    background-color: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
+}
+
+.la_bubble.la_note {
+    align-self: center;
+    font-size: 0.8em;
+    font-style: italic;
+    opacity: 0.7;
+    background: none;
+    border: none;
+    text-align: center;
+    padding: 0 6px;
+}
+
+.la_bubble.la_busy {
+    align-self: flex-start;
+    opacity: 0.7;
+    font-style: italic;
+}
+
+details.la_think {
+    margin-bottom: 6px;
+    font-size: 0.85em;
+    opacity: 0.8;
+}
+
+details.la_think summary {
+    cursor: pointer;
+    font-style: italic;
+    opacity: 0.75;
+}
+
+details.la_think > div {
+    white-space: pre-wrap;
+    border-left: 2px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.25));
+    padding-left: 8px;
+    margin-top: 4px;
+    opacity: 0.85;
+}
+
+/* Proposed edit cards */
+#la_edits {
+    flex: 0 0 auto;
+    max-height: 42%;
+    overflow-y: auto;
+    padding: 6px 10px;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    display: none;
+}
+
+#la_edits.la_open {
+    display: block;
+}
+
+#la_edits .la_edits_head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 0.85em;
+    flex-wrap: wrap;
+}
+
+#la_edits .la_edits_head span {
+    flex: 1 1 auto;
+    opacity: 0.8;
+}
+
+.la_card {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    border-radius: 8px;
+    padding: 6px 8px;
+    margin-bottom: 6px;
+    font-size: 0.85em;
+}
+
+.la_card .la_card_top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+    flex-wrap: wrap;
+}
+
+.la_card .la_card_top b {
+    color: var(--SmartThemeQuoteColor, #7dd3a8);
+    white-space: nowrap;
+}
+
+.la_card .la_card_top span {
+    flex: 1 1 auto;
+    opacity: 0.75;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 60px;
+}
+
+.la_diff {
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-radius: 5px;
+    padding: 4px 6px;
+    margin: 3px 0;
+    font-family: monospace;
+    font-size: 0.92em;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.la_diff.la_before {
+    background-color: rgba(200, 60, 60, 0.12);
+    border-left: 3px solid rgba(220, 90, 90, 0.8);
+}
+
+.la_diff.la_after {
+    background-color: rgba(60, 180, 100, 0.12);
+    border-left: 3px solid rgba(80, 200, 120, 0.8);
+}
+
+.la_card .la_card_status {
+    font-style: italic;
+    opacity: 0.75;
+    margin-top: 2px;
+}
+
+/* Composer */
+#la_composer {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    padding: 6px 10px 8px;
+}
+
+#la_quick {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+}
+
+.la_btn {
+    cursor: pointer;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.25));
+    background-color: rgba(255, 255, 255, 0.06);
+    color: inherit;
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 0.85em;
+}
+
+.la_btn:hover {
+    background-color: rgba(255, 255, 255, 0.14);
+}
+
+.la_btn.la_primary {
+    background-color: var(--SmartThemeQuoteColor, #4b7bec);
+    color: #101010;
+    border-color: transparent;
+    font-weight: 600;
+}
+
+.la_btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+#la_inputrow {
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+}
+
+#la_input {
+    flex: 1 1 auto;
+    min-height: 38px;
+    max-height: 140px;
+    resize: vertical;
+    background-color: rgba(0, 0, 0, 0.25);
+    color: inherit;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    border-radius: 6px;
+    padding: 6px 8px;
+    box-sizing: border-box;
+    font-size: 0.95em;
+}
+
+/* Wand menu entry */
+#la_menu_item {
+    cursor: pointer;
+}
+
+/* Phone layout: dock the panel to the bottom, full width */
+@media (max-width: 550px) {
+    #la_panel {
+        top: auto;
+        left: 1vw;
+        right: 1vw;
+        bottom: 2vh;
+        width: 98vw;
+        max-width: 98vw;
+        height: 82vh;
+        resize: none;
+    }
+}
