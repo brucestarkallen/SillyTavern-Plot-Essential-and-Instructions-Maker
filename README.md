@@ -72,6 +72,12 @@ Before each applied batch the whole document is backed up onto that document's *
 - **✎** on your messages: edit and continue from there (later turns are removed). **📋** copy, **✕** delete per message. **Del last** removes the last exchange, **Clear** wipes the conversation (document untouched).
 - Conversation history is stored per document, capped at 80 entries; the "History depth" setting controls how many recent messages are actually sent per request (default 16 — the full document is always sent regardless).
 
+## Sessions & branching (like Continuity Copilot)
+
+Each document holds multiple **sessions** — parallel conversations about the same document. The session row (under the document row) has the session dropdown plus **+ New / Branch / Ren / Del**; the ‹ n/m › swipe arrows work on the newest agent answer of whichever session is active.
+
+Every user and agent message also carries a **🌿 branch icon**: it copies the conversation *up to and including that message* into a fresh session and switches to it, leaving the original untouched. That's also how you "swipe" an old answer: 🌿 it, and since it's now the last message of the branch, the ‹ › arrows appear and › generates alternatives — while the original session keeps the path you already had. Sessions share the document, its preset, references, and undo stack; only the conversation forks.
+
 ## Reference documents (compare & cross-edit)
 
 The **🔗** button (next to the preset dropdown) attaches other documents to the active conversation as **read-only references**. They are sent in full every turn as `[REFERENCE DOCUMENT: name]` blocks — so watch tokens with several large files — and the subtitle shows `+N refs`.
@@ -106,13 +112,15 @@ The gear drawer always targets the *active document's* preset: live-editable tex
 
 ## Development
 
-`node --check index.js` plus `node test.js` (loads the extension under a stub `SillyTavern` global — proving a clean load and that the 3s init fallback can't crash — then runs 36 unit tests on the parsing/locating/applying engine).
+`node --check index.js` plus `node test.js` (loads the extension under a stub `SillyTavern` global — proving a clean load and that the 3s init fallback can't crash — then runs 39 unit tests on the parsing/locating/applying engine).
 
 ## License
 
 MIT.
 
 ## Changelog
+
+- **0.4.0** — sessions per document (dropdown + New/Branch/Ren/Del) and a 🌿 branch icon on every user/agent message that forks the conversation from that point into a new session; existing conversations migrate automatically into "Session 1".
 
 - **0.3.1** — ✕ Close button at the bottom of the settings drawer (the ⚙ gear also toggles it).
 

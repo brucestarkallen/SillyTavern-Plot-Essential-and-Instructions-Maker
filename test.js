@@ -118,4 +118,17 @@ setTimeout(() => {
     ok(D.resolveDocByName(pool, 'v2') === pool[2], 'resolver: unique partial');
     ok(D.resolveDocByName(pool, 'engine') === null, 'resolver: ambiguous partial -> null');
     ok(D.resolveDocByName(pool, 'missing') === null, 'resolver: unknown -> null');
+
+    // v0.4.0: legacy flat-history docs must migrate into sessions losslessly
+    console.log('== session migration ==');
+    const legacy = { id: 'd1', name: 'Old Doc', text: 'body', history: [
+        { role: 'user', content: 'q1' },
+        { role: 'assistant', content: 'a1', swipes: [{ content: 'a1', think: '' }], swipeId: 0 },
+        { role: 'note', content: 'n1' },
+    ] };
+    D.ensureDocShape(legacy);
+    ok(Array.isArray(legacy.sessions) && legacy.sessions.length === 1 && legacy.activeSessionId === 1, 'sessions created');
+    ok(legacy.history === undefined, 'flat history removed after migration');
+    const mig = D.sess(legacy);
+    ok(mig && mig.history.length === 3 && mig.history[1].swipes.length === 1 && mig.history[1].content === 'a1', 'all messages + swipes preserved', mig && mig.history.map(h => h.role));
 }, 10);

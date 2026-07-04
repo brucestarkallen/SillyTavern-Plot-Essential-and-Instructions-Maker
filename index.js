@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.3.1';
+    const VERSION = '0.4.0';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -216,7 +216,17 @@
         d.text = String(d.text ?? '');
         if (!Number.isFinite(d.updated)) d.updated = Date.now();
         if (!settingsHasPreset(d.presetId)) d.presetId = PRESET_PE_ID;
-        if (!Array.isArray(d.history)) d.history = [];
+        if (!Array.isArray(d.sessions) || !d.sessions.length) {
+            const old = Array.isArray(d.history) ? d.history : [];
+            d.sessions = [{ id: 1, name: 'Session 1', history: old }];
+            d.activeSessionId = 1;
+        }
+        delete d.history; // migrated into sessions
+        for (const sx of d.sessions) {
+            if (!Array.isArray(sx.history)) sx.history = [];
+            sx.name = String(sx.name || ('Session ' + sx.id));
+        }
+        if (!d.sessions.some(sx => sx.id === d.activeSessionId)) d.activeSessionId = d.sessions[0].id;
         if (!Array.isArray(d.undo)) d.undo = [];
         if (!Array.isArray(d.refs)) d.refs = [];
         return d;
@@ -233,7 +243,6 @@
             text: String(text ?? ''),
             updated: Date.now(),
             presetId: PRESET_PE_ID,
-            history: [],
             undo: [],
             refs: [],
         });
@@ -287,6 +296,16 @@
             .filter(d => d && d.id !== doc.id);
     }
 
+    function sess(doc) {
+        if (!doc) return null;
+        if (!Array.isArray(doc.sessions) || !doc.sessions.length) ensureDocShape(doc);
+        return doc.sessions.find(sx => sx.id === doc.activeSessionId) || doc.sessions[0];
+    }
+
+    function nextSessId(doc) {
+        return doc.sessions.reduce((m, sx) => Math.max(m, Number(sx.id) || 0), 0) + 1;
+    }
+
     function pushHistory(doc, role, content, think) {
         if (!doc) return;
         const entry = { role, content: String(content ?? '') };
@@ -295,8 +314,9 @@
             entry.swipes = [{ content: entry.content, think: entry.think || '' }];
             entry.swipeId = 0;
         }
-        doc.history.push(entry);
-        if (doc.history.length > 80) doc.history.splice(0, doc.history.length - 80);
+        const m = sess(doc);
+        m.history.push(entry);
+        if (m.history.length > 80) m.history.splice(0, m.history.length - 80);
         persist();
         return entry;
     }
@@ -815,7 +835,8 @@
         const msgs = [{ role: 'system', content: sys }];
 
         const depth = Math.max(2, Number(settings.historyDepth) || 16);
-        const base = (Number.isInteger(uptoIdx) ? doc.history.slice(0, uptoIdx) : doc.history.slice()).slice(-depth);
+        const hist = sess(doc).history;
+        const base = (Number.isInteger(uptoIdx) ? hist.slice(0, uptoIdx) : hist.slice()).slice(-depth);
 
         let lastUser = -1;
         for (let i = base.length - 1; i >= 0; i--) {
@@ -851,6 +872,7 @@
         running = true;
         setBusy(true);
         const docAtStart = doc.id;
+        const sessAtStart = sess(doc)?.id;
         const busy = addBubble('busy', Number.isInteger(opts.swipeIdx)
             ? 'regenerating \u2014 new alternative (old answer kept as a swipe)\u2026'
             : 'thinking\u2026');
@@ -871,8 +893,8 @@
             const think = split.think;
 
             busy.remove();
-            if (activeDoc()?.id !== docAtStart) {
-                addBubble('note', 'Reply discarded \u2014 document switched during generation.');
+            if (activeDoc()?.id !== docAtStart || sess(activeDoc())?.id !== sessAtStart) {
+                addBubble('note', 'Reply discarded \u2014 document or session switched during generation.');
                 return;
             }
             if (stopRequested) {
@@ -886,7 +908,7 @@
             }
 
             if (Number.isInteger(opts.swipeIdx)) {
-                const entry = doc.history[opts.swipeIdx];
+                const entry = sess(doc).history[opts.swipeIdx];
                 if (entry && entry.role === 'assistant') {
                     ensureSwipes(entry);
                     entry.swipes.push({ content: reply, think: think || '' });
@@ -924,7 +946,7 @@
         if (running) return;
         const doc = activeDoc();
         if (!doc) return;
-        const h = doc.history;
+        const h = sess(doc).history;
         const entry = h[idx];
         if (!entry || entry.role !== 'assistant' || idx !== h.length - 1) return;
         ensureSwipes(entry);
@@ -949,7 +971,7 @@
         if (running) return;
         const doc = activeDoc();
         if (!doc) return;
-        const h = doc.history;
+        const h = sess(doc).history;
         let i = h.length - 1;
         while (i >= 0 && h[i].role !== 'assistant') i--;
         if (i === h.length - 1 && i >= 0) { await swipeAssistant(i, +1); return; }
@@ -969,7 +991,7 @@
         if (running) return;
         const doc = activeDoc();
         if (!doc) return;
-        const h = doc.history;
+        const h = sess(doc).history;
         let i = h.length - 1;
         while (i >= 0 && h[i].role !== 'user') i--;
         if (i < 0) { toast('Nothing to delete.', 'warning'); return; }
@@ -984,7 +1006,7 @@
         if (running) return;
         const doc = activeDoc();
         if (!doc) return;
-        const h = doc.history;
+        const h = sess(doc).history;
         if (!h[idx] || h[idx].role !== 'user') return;
         if (idx < h.length - 1 && !confirm('Edit this message? Everything after it in this conversation will be removed.')) return;
         const text = h[idx].content;
@@ -1002,7 +1024,7 @@
         if (running) return;
         const doc = activeDoc();
         if (!doc) return;
-        const h = doc.history;
+        const h = sess(doc).history;
         if (!h[idx]) return;
         if (!confirm('Delete this message from the agent conversation?')) return;
         h.splice(idx, 1);
@@ -1016,8 +1038,9 @@
         if (running) return;
         const doc = activeDoc();
         if (!doc) return;
-        if (!confirm('Clear the agent conversation for "' + doc.name + '"? The document itself is untouched.')) return;
-        doc.history = [];
+        const cur = sess(doc);
+        if (!confirm('Clear session "' + cur.name + '" of "' + doc.name + '"? The document itself is untouched.')) return;
+        cur.history = [];
         persist();
         pendingEdits = [];
         renderHistory();
@@ -1261,6 +1284,94 @@
     }
 
     // ------------------------------------------------------------------
+    // Sessions: parallel conversations per document, with branching
+    // ------------------------------------------------------------------
+
+    function renderSessions() {
+        const sel = el('la_sess');
+        if (!sel) return;
+        const doc = activeDoc();
+        sel.innerHTML = '';
+        if (!doc) { sel.disabled = true; return; }
+        sel.disabled = false;
+        for (const sx of doc.sessions) {
+            const o = document.createElement('option');
+            o.value = String(sx.id);
+            o.textContent = oneLine(sx.name).slice(0, 32) || ('Session ' + sx.id);
+            sel.appendChild(o);
+        }
+        sel.value = String(doc.activeSessionId);
+    }
+
+    function switchSession(id) {
+        if (running) return;
+        const doc = activeDoc();
+        if (!doc) return;
+        const n = Number(id);
+        if (!doc.sessions.some(sx => sx.id === n)) return;
+        doc.activeSessionId = n;
+        pendingEdits = [];
+        editsCollapsed = false;
+        persist();
+        renderSessions();
+        renderHistory();
+        renderEditCards();
+    }
+
+    function newSession() {
+        if (running) return;
+        const doc = activeDoc();
+        if (!doc) { toast('No document selected.', 'warning'); return; }
+        const nid = nextSessId(doc);
+        const v = prompt('Name for the new session:', 'Session ' + nid);
+        if (v === null) return;
+        doc.sessions.push({ id: nid, name: v.trim() || ('Session ' + nid), history: [] });
+        switchSession(nid);
+    }
+
+    // Branch: copy the current session up to (and including) message idx into
+    // a fresh session and switch to it. Omitting idx copies the whole session.
+    function branchAt(idx) {
+        if (running) return;
+        const doc = activeDoc();
+        if (!doc) { toast('No document selected.', 'warning'); return; }
+        const cur = sess(doc);
+        const upTo = Number.isInteger(idx) ? idx : cur.history.length - 1;
+        const copy = JSON.parse(JSON.stringify(cur.history.slice(0, upTo + 1)));
+        const nid = nextSessId(doc);
+        doc.sessions.push({ id: nid, name: oneLine(cur.name).slice(0, 20) + ' \u00BB' + nid, history: copy });
+        switchSession(nid);
+        toast('Branched into a new session (' + copy.length + ' message(s) copied). The original session is untouched.', 'success');
+    }
+
+    function renameSession() {
+        const doc = activeDoc();
+        if (!doc) return;
+        const cur = sess(doc);
+        const v = prompt('Rename session:', cur.name);
+        if (v === null) return;
+        cur.name = v.trim() || cur.name;
+        persist();
+        renderSessions();
+    }
+
+    function deleteSession() {
+        if (running) return;
+        const doc = activeDoc();
+        if (!doc) return;
+        const cur = sess(doc);
+        if (!confirm('Delete session "' + cur.name + '" (' + cur.history.length + ' message(s))? The document itself is untouched.')) return;
+        doc.sessions = doc.sessions.filter(sx => sx.id !== cur.id);
+        if (!doc.sessions.length) doc.sessions.push({ id: 1, name: 'Session 1', history: [] });
+        doc.activeSessionId = doc.sessions[0].id;
+        pendingEdits = [];
+        persist();
+        renderSessions();
+        renderHistory();
+        renderEditCards();
+    }
+
+    // ------------------------------------------------------------------
     // Document actions
     // ------------------------------------------------------------------
 
@@ -1471,6 +1582,13 @@
             '    <select id="la_preset" title="Agent preset (brain) for this document"></select>',
             '    <button class="la_btn" id="la_refs" title="Attach other documents as read-only references for this conversation">\uD83D\uDD17<span id="la_refcount">0</span></button>',
             '  </div>',
+            '  <div class="la_dbrow">',
+            '    <select id="la_sess" title="Conversation session for this document \u2014 branch to explore alternatives without losing the original"></select>',
+            '    <button class="la_btn" id="la_sessnew" title="New empty session (fresh conversation, same document)">+ New</button>',
+            '    <button class="la_btn" id="la_sessbr" title="Branch: copy this whole session into a new one">Branch</button>',
+            '    <button class="la_btn" id="la_sessren" title="Rename this session">Ren</button>',
+            '    <button class="la_btn" id="la_sessdel" title="Delete this session">Del</button>',
+            '  </div>',
             '  <div class="la_dbrow la_dbbtns">',
             '    <button class="la_btn" id="la_new" title="New empty document">+ New</button>',
             '    <button class="la_btn" id="la_dren" title="Rename document">Ren</button>',
@@ -1540,6 +1658,11 @@
             bar.style.display = show ? 'flex' : 'none';
             if (show) renderRefBar();
         });
+        el('la_sess').addEventListener('change', () => switchSession(el('la_sess').value));
+        el('la_sessnew').addEventListener('click', () => newSession());
+        el('la_sessbr').addEventListener('click', () => branchAt());
+        el('la_sessren').addEventListener('click', () => renameSession());
+        el('la_sessdel').addEventListener('click', () => deleteSession());
         el('la_new').addEventListener('click', () => newDoc());
         el('la_dren').addEventListener('click', () => renameDoc());
         el('la_dup').addEventListener('click', () => dupDoc());
@@ -1737,12 +1860,14 @@
             btn.textContent = b ? 'Stop' : 'Send';
             btn.style.background = b ? 'rgba(220,90,90,0.85)' : '';
         }
-        for (const id of ['la_retry', 'la_dellast', 'la_clear', 'la_new', 'la_dren', 'la_dup', 'la_ddel', 'la_imp']) {
+        for (const id of ['la_retry', 'la_dellast', 'la_clear', 'la_new', 'la_dren', 'la_dup', 'la_ddel', 'la_imp', 'la_sessnew', 'la_sessbr', 'la_sessren', 'la_sessdel']) {
             const x = el(id);
             if (x) x.disabled = b;
         }
         const dsel = el('la_doc');
         if (dsel) dsel.disabled = b;
+        const ssel = el('la_sess');
+        if (ssel) ssel.disabled = b;
     }
 
     // ------------------------------------------------------------------
@@ -1762,9 +1887,12 @@
         if (kind === 'user') {
             mk('\u270E', 'Edit this message and continue from here', () => startEditUserMessage(hidx), '0.6');
         }
+        if (kind === 'user' || kind === 'ai' || kind === 'assistant') {
+            mk('\uD83C\uDF3F', 'Branch: new session continuing from this message (this session stays untouched)', () => branchAt(hidx));
+        }
         mk('\uD83D\uDCCB', 'Copy message text', async () => {
             const doc = activeDoc();
-            const h = doc?.history?.[hidx];
+            const h = sess(doc)?.history?.[hidx];
             const ok = await copyText(String(h?.content ?? ''));
             toast(ok ? 'Copied.' : 'Copy failed.', ok ? 'success' : 'error');
         });
@@ -1811,7 +1939,7 @@
             updateSub();
             return;
         }
-        const hist = doc.history;
+        const hist = sess(doc).history;
         if (!hist.length) {
             addBubble('note', 'Talk to the agent about "' + doc.name + '". It edits the document through docedits cards you approve. Try: "draft the document" or "change X to Y".');
         }
@@ -1937,6 +2065,7 @@
 
     function renderAll() {
         refreshDocBar();
+        renderSessions();
         const rb = el('la_refbar');
         if (rb && rb.style.display !== 'none') renderRefBar();
         refreshPresetTools();
@@ -2047,6 +2176,7 @@
         globalThis.__loreAgentDebug = {
             VERSION, findBlock, parseDocEdits, stripBlocks, splitThinking,
             normChars, levenshtein, locate, applyEditToText, grow, mimeForName, resolveDocByName,
+            ensureDocShape, sess,
         };
     } catch (e) { /* ignore */ }
 })();
