@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.4.2';
+    const VERSION = '0.5.0';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -926,16 +926,16 @@
             if (parsed.error) {
                 addBubble('note', 'docedits error: ' + parsed.error + ' \u2014 ask the agent to resend valid JSON.');
             }
-            if (parsed.edits.length) {
-                editsCollapsed = false;
-                pendingEdits = parsed.edits;
-                renderEditCards();
-            }
+            pendingEdits = parsed.edits; // always mirror the visible reply (clears stale cards)
+            if (parsed.edits.length) editsCollapsed = false;
+            renderEditCards();
         } catch (err) {
             busy.remove();
             console.error(LOG, err);
-            addBubble('note', 'Error: ' + (err?.message || err));
-            toast(String(err?.message || err), 'error');
+            let emsg = String(err?.message || err);
+            if (Number(settings.maxTokens) > 32768) emsg += ' \u2014 if this is a provider rejection, try lowering Max tokens.';
+            addBubble('note', 'Error: ' + emsg);
+            toast(emsg, 'error');
         } finally {
             running = false;
             setBusy(false);
@@ -1318,7 +1318,7 @@
         for (const sx of doc.sessions) {
             const o = document.createElement('option');
             o.value = String(sx.id);
-            o.textContent = oneLine(sx.name).slice(0, 32) || ('Session ' + sx.id);
+            o.textContent = '\uD83D\uDCAC ' + (oneLine(sx.name).slice(0, 30) || ('Session ' + sx.id));
             sel.appendChild(o);
         }
         sel.value = String(doc.activeSessionId);
@@ -1618,7 +1618,7 @@
             '    <button class="la_btn" id="la_imp" title="Import: pick a file (.md/.json/.yaml/2026) or paste text">Imp</button>',
             '    <button class="la_btn" id="la_exp" title="Export: download as .md">Exp</button>',
             '    <button class="la_btn" id="la_dcopy" title="Copy the whole document to the clipboard">\uD83D\uDCCB</button>',
-            '    <button class="la_btn" id="la_view" title="View/Edit the document in a window">View</button>',
+            '    <button class="la_btn" id="la_view" title="View/Edit the document in a window">\uD83D\uDC41 View</button>',
             '  </div>',
             '  <div class="la_dbrow" id="la_refbar" style="display:none;flex-direction:column;align-items:stretch;gap:4px;"></div>',
             '</div>',
@@ -1627,10 +1627,10 @@
             '<div id="la_edits"></div>',
             '<div id="la_composer">',
             '  <div id="la_quick">',
-            '    <button class="la_btn" id="la_retry" title="Regenerate the last agent reply (kept as a swipe)">Retry</button>',
-            '    <button class="la_btn" id="la_dellast" title="Delete the last question + answer">Del last</button>',
-            '    <button class="la_btn" id="la_undo" title="Undo the last applied batch / manual save on this document">Undo</button>',
-            '    <button class="la_btn" id="la_clear" title="Clear the agent conversation (document untouched)">Clear</button>',
+            '    <button class="la_btn" id="la_retry" title="Regenerate the last agent reply (kept as a swipe)">\u21BB Retry</button>',
+            '    <button class="la_btn" id="la_dellast" title="Delete the last question + answer">\u232B Del last</button>',
+            '    <button class="la_btn" id="la_undo" title="Undo the last applied batch / manual save on this document">\u21B6 Undo</button>',
+            '    <button class="la_btn" id="la_clear" title="Clear the agent conversation (document untouched)">\uD83E\uDDF9 Clear</button>',
             '  </div>',
             '  <div id="la_inputrow">',
             '    <textarea id="la_input" placeholder="e.g. draft a Plot Essential for a mage academy \u2014 or: change the magic system to blood-cost casting"></textarea>',
@@ -1704,9 +1704,10 @@
             '<label>LLM route (Connection Profile)</label>',
             '<select id="la_profile"></select>',
             '<div class="la_row">',
-            '  <div><label>Max tokens</label><input type="number" id="la_maxtok" min="256" max="32768" step="256"></div>',
+            '  <div><label>Max tokens (reply ceiling)</label><input type="number" id="la_maxtok" min="256" max="200000" step="256"></div>',
             '  <div><label>History depth (msgs sent)</label><input type="number" id="la_depth" min="2" max="80"></div>',
             '</div>',
+            '<div class="la_hint">Max tokens is a ceiling, not a target \u2014 the model stops when done, and thinking counts against it, so high is good. If a provider rejects a request, lower it.</div>',
             '<div class="la_check"><input type="checkbox" id="la_stream"><span>Streaming (needs a Connection Profile)</span></div>',
             '<div class="la_check"><input type="checkbox" id="la_showthink"><span>Show thinking blocks</span></div>',
             '<div class="la_presethead"><label>Agent instructions \u2014 preset: <b id="la_preset_name"></b></label></div>',
@@ -1732,7 +1733,7 @@
         refreshPresetTools();
 
         el('la_profile').addEventListener('change', () => { settings.profileId = el('la_profile').value; persist(); });
-        el('la_maxtok').addEventListener('change', () => { settings.maxTokens = Math.max(256, Number(el('la_maxtok').value) || 4096); el('la_maxtok').value = settings.maxTokens; persist(); });
+        el('la_maxtok').addEventListener('change', () => { settings.maxTokens = Math.min(200000, Math.max(256, Number(el('la_maxtok').value) || 4096)); el('la_maxtok').value = settings.maxTokens; persist(); });
         el('la_depth').addEventListener('change', () => { settings.historyDepth = Math.max(2, Math.min(80, Number(el('la_depth').value) || 16)); el('la_depth').value = settings.historyDepth; persist(); });
         el('la_stream').addEventListener('change', () => { settings.streaming = el('la_stream').checked; persist(); });
         el('la_showthink').addEventListener('change', () => { settings.showThinking = el('la_showthink').checked; renderHistory(); persist(); });
@@ -1782,6 +1783,12 @@
         if (delBtn) delBtn.disabled = !p || isSeedPreset(p.id);
     }
 
+    function kFmt(n) {
+        n = Number(n) || 0;
+        if (n < 1000) return String(n);
+        return (n < 10000 ? (n / 1000).toFixed(1) : Math.round(n / 1000)) + 'k';
+    }
+
     function refreshDocBar() {
         const dsel = el('la_doc');
         const psel = el('la_preset');
@@ -1797,7 +1804,7 @@
             for (const d of settings.docs) {
                 const o = document.createElement('option');
                 o.value = d.id;
-                o.textContent = oneLine(d.name).slice(0, 40) || 'Untitled';
+                o.textContent = '\uD83D\uDCC4 ' + (oneLine(d.name).slice(0, 30) || 'Untitled') + ' \u00B7 ' + kFmt((d.text || '').length);
                 dsel.appendChild(o);
             }
             dsel.value = settings.activeDocId;
@@ -1866,6 +1873,13 @@
     }
 
     function updateSub() {
+        const ub = el('la_undo');
+        if (ub) {
+            const d0 = activeDoc();
+            const n = d0 && Array.isArray(d0.undo) ? d0.undo.length : 0;
+            ub.textContent = '\u21B6 Undo' + (n ? ' (' + n + ')' : '');
+            ub.disabled = !n;
+        }
         const sub = el('la_sub');
         if (!sub) return;
         const doc = activeDoc();
@@ -2037,6 +2051,14 @@
         return '\u270F Replace';
     }
 
+    function statusCls(st) {
+        st = String(st || '');
+        if (st.indexOf('fuzzy') !== -1) return 'la_st_fuzzy';
+        if (st.indexOf('applied') === 0) return 'la_st_ok';
+        if (st.indexOf('failed') === 0) return 'la_st_fail';
+        return 'la_st_skip';
+    }
+
     function renderEditCards() {
         const box = el('la_edits');
         if (!box) return;
@@ -2071,12 +2093,12 @@
             card.innerHTML =
                 '<div class="la_card_top"><b>' + editTypeLabel(edit) + (edit.docName ? ' \u2192 ' + esc(edit.docName) : '') + '</b><span>' + esc(edit.reason || '') + '</span>' +
                 (edit.status === 'pending'
-                    ? '<button class="la_btn" data-la-apply="' + idx + '">Apply</button><button class="la_btn" data-la-skip="' + idx + '">Skip</button>'
+                    ? '<button class="la_btn la_apply" data-la-apply="' + idx + '">Apply</button><button class="la_btn la_skip" data-la-skip="' + idx + '">Skip</button>'
                     : '') +
                 '</div>' +
                 '<div class="la_diff la_before">' + esc(findShown) + '</div>' +
                 '<div class="la_diff la_after">' + esc(edit.replace) + '</div>' +
-                (edit.status !== 'pending' ? '<div class="la_card_status">' + esc(edit.status) + '</div>' : '');
+                (edit.status !== 'pending' ? '<div class="la_card_status ' + statusCls(edit.status) + '">' + esc(edit.status) + '</div>' : '');
             list.appendChild(card);
         });
 

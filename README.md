@@ -97,7 +97,7 @@ The gear drawer always targets the *active document's* preset: live-editable tex
 ## Settings
 
 - **LLM route** — Connection Profile, or "Current API" raw fallback.
-- **Max tokens** — default 4096; raise it if you ask for very large appends or a full rewrite of a big document.
+- **Max tokens** — the ceiling for one reply (thinking included), not a target: the model stops when it's done, so setting it very high (up to 200,000 accepted) is safe *unless your provider rejects large values* — if a request errors, lower it. Deep-analysis replies on thinking models genuinely benefit from a high ceiling.
 - **History depth** — recent messages sent per request (2–80).
 - **Streaming / Show thinking** toggles.
 - Settings save automatically.
@@ -119,6 +119,8 @@ The gear drawer always targets the *active document's* preset: live-editable tex
 MIT.
 
 ## Changelog
+
+- **0.5.0** — final audit pass: fixed stale diff cards (cards now always mirror the reply on screen, so a swipe without edits can't leave outdated cards applyable); max-token ceiling raised to 200k with provider-rejection hints; Undo button shows backup depth and disables at zero; document dropdown shows sizes; full visual refresh (bigger touch targets, colored status chips — green applied / amber fuzzy / red failed, sticky card header, keyboard-aware phone height, focus outlines, thin scrollbars); added AGENTS.md so any future AI session can maintain the project.
 
 - **0.4.2** — dragging rewritten: window-level pointer tracking (pointer capture is unreliable on Android WebViews and could make the panel undraggable) and the drag surface now covers the header, the whole document/session/reference bar, and the quick-button row. Scrolling areas and text inputs stay non-drag so the log still scrolls and text still selects.
 
