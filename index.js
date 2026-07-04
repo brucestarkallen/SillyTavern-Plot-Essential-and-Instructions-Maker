@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.3.0';
+    const VERSION = '0.3.1';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -1574,6 +1574,9 @@
             '  <button class="la_btn" id="la_preset_ren" title="Rename this preset">Ren</button>',
             '  <button class="la_btn" id="la_preset_del" title="Delete this preset (built-ins cannot be deleted)">Del</button>',
             '</div>',
+            '<div class="la_presetbtns" style="margin-top:10px;">',
+            '  <button class="la_btn" id="la_set_close">✕ Close settings</button>',
+            '</div>',
             '<div class="la_hint">Settings save automatically. v' + VERSION + '</div>',
         ].join('\n');
 
@@ -1595,6 +1598,7 @@
             p.prompt = el('la_preset_prompt').value;
             persist();
         });
+        el('la_set_close').addEventListener('click', () => el('la_settings').classList.remove('la_open'));
         el('la_preset_edit').addEventListener('click', () => editPreset());
         el('la_preset_reset').addEventListener('click', () => resetPreset());
         el('la_preset_new').addEventListener('click', () => newPreset());

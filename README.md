@@ -114,6 +114,8 @@ MIT.
 
 ## Changelog
 
+- **0.3.1** — ✕ Close button at the bottom of the settings drawer (the ⚙ gear also toggles it).
+
 - **0.3.0** — reference documents: attach other docs to a conversation via 🔗 (sent read-only as `[REFERENCE DOCUMENT]` blocks), agent can target any attached doc per-edit with `"doc": "name"`, cards show the target, Undo reverts whole batches across every document they touched.
 
 - **0.2.0** — import from device files via a File picker in the editor window (any text format; filename becomes the document name), export with a chosen filename/extension instead of forced `.md`, per-extension MIME types.
