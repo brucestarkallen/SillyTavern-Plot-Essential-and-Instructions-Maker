@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.4.0';
+    const VERSION = '0.4.1';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -1913,17 +1913,41 @@
         return div;
     }
 
+    // Explicit JS toggle instead of a native <details> dropdown: the native
+    // widget silently failed to expand on Android (theme/browser CSS can eat
+    // it), and this is the only reliable pattern on that device. Inline
+    // styles on purpose so no cached or theme CSS can break it either.
+    function makeThinkBox(think) {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'margin-bottom:6px;';
+        const label = () => '\uD83E\uDDE0 thinking (' + think.length.toLocaleString() + ' chars) ';
+        const head = document.createElement('div');
+        head.textContent = label() + '\u25B8';
+        head.title = 'Tap to show/hide the thinking';
+        head.style.cssText = 'cursor:pointer;font-size:0.85em;font-style:italic;opacity:0.75;user-select:none;';
+        const body = document.createElement('div');
+        body.textContent = think;
+        body.style.cssText = 'display:none;white-space:pre-wrap;word-break:break-word;border-left:2px solid rgba(255,255,255,0.35);padding-left:8px;margin:4px 0 6px;opacity:0.85;font-size:0.85em;max-height:40vh;overflow-y:auto;';
+        head.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const open = body.style.display === 'none';
+            body.style.display = open ? 'block' : 'none';
+            head.textContent = label() + (open ? '\u25BE' : '\u25B8');
+        });
+        wrap.appendChild(head);
+        wrap.appendChild(body);
+        return wrap;
+    }
+
     function addAiBubble(rest, think, hidx) {
         const log = el('la_log');
         if (!log) return document.createElement('div');
         const div = document.createElement('div');
         div.className = 'la_bubble la_ai';
-        let html = '';
-        if (settings.showThinking && think) {
-            html += '<details class="la_think"><summary>thinking</summary><div>' + esc(think) + '</div></details>';
-        }
-        html += esc(stripBlocks(rest) || '(no text)');
-        div.innerHTML = html;
+        if (settings.showThinking && think) div.appendChild(makeThinkBox(think));
+        const body = document.createElement('div');
+        body.textContent = stripBlocks(rest) || '(no text)';
+        div.appendChild(body);
         attachMsgIcons(div, 'ai', hidx);
         log.appendChild(div);
         return div;

@@ -120,6 +120,8 @@ MIT.
 
 ## Changelog
 
+- **0.4.1** — thinking box rebuilt as an explicit tap-to-expand toggle with inline styles (native `<details>` dropdown failed to expand on Android); header now shows the thinking size, body is capped at 40vh and scrolls.
+
 - **0.4.0** — sessions per document (dropdown + New/Branch/Ren/Del) and a 🌿 branch icon on every user/agent message that forks the conversation from that point into a new session; existing conversations migrate automatically into "Session 1".
 
 - **0.3.1** — ✕ Close button at the bottom of the settings drawer (the ⚙ gear also toggles it).
