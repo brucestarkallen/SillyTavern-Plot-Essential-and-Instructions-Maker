@@ -120,6 +120,8 @@ MIT.
 
 ## Changelog
 
+- **0.4.2** — dragging rewritten: window-level pointer tracking (pointer capture is unreliable on Android WebViews and could make the panel undraggable) and the drag surface now covers the header, the whole document/session/reference bar, and the quick-button row. Scrolling areas and text inputs stay non-drag so the log still scrolls and text still selects.
+
 - **0.4.1** — thinking box rebuilt as an explicit tap-to-expand toggle with inline styles (native `<details>` dropdown failed to expand on Android); header now shows the thinking size, body is capped at 40vh and scrolls.
 
 - **0.4.0** — sessions per document (dropdown + New/Branch/Ren/Del) and a 🌿 branch icon on every user/agent message that forks the conversation from that point into a new session; existing conversations migrate automatically into "Session 1".

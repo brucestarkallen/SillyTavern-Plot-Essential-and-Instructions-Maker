@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.4.1';
+    const VERSION = '0.4.2';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -1052,29 +1052,50 @@
     // CSS file must never be able to break this — learned the hard way)
     // ------------------------------------------------------------------
 
-    function makeDraggable(box, handle) {
-        let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
-        try { handle.style.touchAction = 'none'; } catch (e) { /* ignore */ }
-        handle.addEventListener('pointerdown', (e) => {
-            if (e.target.closest('button, select, input, textarea, a, .la_hbtn')) return;
-            dragging = true;
-            sx = e.clientX; sy = e.clientY;
-            const r = box.getBoundingClientRect();
-            ox = r.left; oy = r.top;
-            handle.setPointerCapture?.(e.pointerId);
-        });
-        handle.addEventListener('pointermove', (e) => {
-            if (!dragging) return;
-            const nx = Math.min(Math.max(0, ox + e.clientX - sx), window.innerWidth - 80);
+    // Drag via window-level move/up listeners instead of pointer capture on
+    // the handle: setPointerCapture is unreliable in Android WebViews and a
+    // failed capture makes the panel undraggable. Position is frozen to
+    // explicit left/top the instant a drag starts, so CSS right/bottom
+    // anchoring (the phone layout) can never fight the drag either.
+    // Accepts one handle or an array of handles (drag-from-anywhere zones).
+    function makeDraggable(box, handles) {
+        const list = Array.isArray(handles) ? handles : [handles];
+        let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false, pid = null;
+        const onMove = (e) => {
+            if (!dragging || (pid !== null && e.pointerId !== undefined && e.pointerId !== pid)) return;
+            e.preventDefault();
+            const nx = Math.min(Math.max(0, ox + e.clientX - sx), window.innerWidth - 60);
             const ny = Math.min(Math.max(0, oy + e.clientY - sy), window.innerHeight - 40);
             box.style.left = nx + 'px';
             box.style.top = ny + 'px';
-            box.style.right = 'auto';
-            box.style.bottom = 'auto';
-        });
-        const stop = () => { dragging = false; };
-        handle.addEventListener('pointerup', stop);
-        handle.addEventListener('pointercancel', stop);
+        };
+        const onUp = (e) => {
+            if (pid !== null && e.pointerId !== undefined && e.pointerId !== pid) return;
+            dragging = false;
+            pid = null;
+            window.removeEventListener('pointermove', onMove);
+            window.removeEventListener('pointerup', onUp);
+            window.removeEventListener('pointercancel', onUp);
+        };
+        for (const h of list) {
+            if (!h) continue;
+            try { h.style.touchAction = 'none'; } catch (e) { /* ignore */ }
+            h.addEventListener('pointerdown', (e) => {
+                if (e.target.closest('button, select, input, textarea, a, label, .la_hbtn, .la_bubble, .la_card')) return;
+                dragging = true;
+                pid = (e.pointerId !== undefined) ? e.pointerId : null;
+                sx = e.clientX; sy = e.clientY;
+                const r = box.getBoundingClientRect();
+                ox = r.left; oy = r.top;
+                box.style.left = ox + 'px';
+                box.style.top = oy + 'px';
+                box.style.right = 'auto';
+                box.style.bottom = 'auto';
+                window.addEventListener('pointermove', onMove, { passive: false });
+                window.addEventListener('pointerup', onUp);
+                window.addEventListener('pointercancel', onUp);
+            });
+        }
     }
 
     // showEditor({title, text, saveLabel, showName, nameValue, bound, onSave})
@@ -1620,7 +1641,7 @@
         document.body.appendChild(panel);
 
         buildSettingsUI();
-        makeDraggable(panel, el('la_header'));
+        makeDraggable(panel, [el('la_header'), el('la_docbar'), el('la_quick')]);
 
         el('la_close').addEventListener('click', () => togglePanel(false));
         el('la_gear').addEventListener('click', () => {
