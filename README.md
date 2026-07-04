@@ -120,6 +120,8 @@ MIT.
 
 ## Changelog
 
+- **0.6.0** — compact top bar: only the document + session dropdowns stay visible; preset, references, and all document/session buttons fold behind a ⋮ toggle (state remembered), giving the chat log back ~5 rows on phones. Chat log now keeps a minimum height; fixed a garbled Imp tooltip.
+
 - **0.5.0** — final audit pass: fixed stale diff cards (cards now always mirror the reply on screen, so a swipe without edits can't leave outdated cards applyable); max-token ceiling raised to 200k with provider-rejection hints; Undo button shows backup depth and disables at zero; document dropdown shows sizes; full visual refresh (bigger touch targets, colored status chips — green applied / amber fuzzy / red failed, sticky card header, keyboard-aware phone height, focus outlines, thin scrollbars); added AGENTS.md so any future AI session can maintain the project.
 
 - **0.4.2** — dragging rewritten: window-level pointer tracking (pointer capture is unreliable on Android WebViews and could make the panel undraggable) and the drag surface now covers the header, the whole document/session/reference bar, and the quick-button row. Scrolling areas and text inputs stay non-drag so the log still scrolls and text still selects.

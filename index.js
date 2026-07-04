@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.5.0';
+    const VERSION = '0.6.0';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -81,6 +81,7 @@
         streaming: true,
         showThinking: true,
         activeDocId: '',
+        barOpen: false,   // management fold-out under the doc/session row
         batchLog: [],  // ids of applied batches, newest last (cross-doc undo)
         docs: [],      // [{id, name, text, updated, presetId, history, undo, refs}]
         presets: [],   // [{id, name, prompt}]
@@ -1600,27 +1601,34 @@
             '<div id="la_docbar">',
             '  <div class="la_dbrow">',
             '    <select id="la_doc" title="Active document"></select>',
-            '    <select id="la_preset" title="Agent preset (brain) for this document"></select>',
-            '    <button class="la_btn" id="la_refs" title="Attach other documents as read-only references for this conversation">\uD83D\uDD17<span id="la_refcount">0</span></button>',
+            '    <select id="la_sess" title="Conversation session \u2014 branch to explore alternatives without losing the original"></select>',
+            '    <button class="la_btn" id="la_manage" title="Show document / session / preset management">\u22EE</button>',
             '  </div>',
-            '  <div class="la_dbrow">',
-            '    <select id="la_sess" title="Conversation session for this document \u2014 branch to explore alternatives without losing the original"></select>',
-            '    <button class="la_btn" id="la_sessnew" title="New empty session (fresh conversation, same document)">+ New</button>',
-            '    <button class="la_btn" id="la_sessbr" title="Branch: copy this whole session into a new one">Branch</button>',
-            '    <button class="la_btn" id="la_sessren" title="Rename this session">Ren</button>',
-            '    <button class="la_btn" id="la_sessdel" title="Delete this session">Del</button>',
+            '  <div id="la_manage_area">',
+            '    <div class="la_dbrow">',
+            '      <select id="la_preset" title="Agent preset (brain) for this document"></select>',
+            '      <button class="la_btn" id="la_refs" title="Attach other documents as read-only references for this conversation">\uD83D\uDD17<span id="la_refcount">0</span></button>',
+            '      <button class="la_btn" id="la_view" title="View/Edit the document in a window">\uD83D\uDC41 View</button>',
+            '    </div>',
+            '    <div class="la_dbrow la_grp">',
+            '      <span class="la_grplbl" title="Document actions">Doc</span>',
+            '      <button class="la_btn" id="la_new" title="New empty document">+ New</button>',
+            '      <button class="la_btn" id="la_dren" title="Rename document">Ren</button>',
+            '      <button class="la_btn" id="la_dup" title="Duplicate document (text + preset, fresh conversation)">Dup</button>',
+            '      <button class="la_btn" id="la_ddel" title="Delete document">Del</button>',
+            '      <button class="la_btn" id="la_imp" title="Import: pick a file (.md / .json / .yaml \u2026) or paste text">Imp</button>',
+            '      <button class="la_btn" id="la_exp" title="Export: download with a chosen filename/extension">Exp</button>',
+            '      <button class="la_btn" id="la_dcopy" title="Copy the whole document to the clipboard">\uD83D\uDCCB</button>',
+            '    </div>',
+            '    <div class="la_dbrow la_grp">',
+            '      <span class="la_grplbl" title="Session actions">Sess</span>',
+            '      <button class="la_btn" id="la_sessnew" title="New empty session (fresh conversation, same document)">+ New</button>',
+            '      <button class="la_btn" id="la_sessbr" title="Branch: copy this whole session into a new one">Branch</button>',
+            '      <button class="la_btn" id="la_sessren" title="Rename this session">Ren</button>',
+            '      <button class="la_btn" id="la_sessdel" title="Delete this session">Del</button>',
+            '    </div>',
+            '    <div class="la_dbrow" id="la_refbar" style="display:none;flex-direction:column;align-items:stretch;gap:4px;"></div>',
             '  </div>',
-            '  <div class="la_dbrow la_dbbtns">',
-            '    <button class="la_btn" id="la_new" title="New empty document">+ New</button>',
-            '    <button class="la_btn" id="la_dren" title="Rename document">Ren</button>',
-            '    <button class="la_btn" id="la_dup" title="Duplicate document (text + preset, fresh conversation)">Dup</button>',
-            '    <button class="la_btn" id="la_ddel" title="Delete document">Del</button>',
-            '    <button class="la_btn" id="la_imp" title="Import: pick a file (.md/.json/.yaml/2026) or paste text">Imp</button>',
-            '    <button class="la_btn" id="la_exp" title="Export: download as .md">Exp</button>',
-            '    <button class="la_btn" id="la_dcopy" title="Copy the whole document to the clipboard">\uD83D\uDCCB</button>',
-            '    <button class="la_btn" id="la_view" title="View/Edit the document in a window">\uD83D\uDC41 View</button>',
-            '  </div>',
-            '  <div class="la_dbrow" id="la_refbar" style="display:none;flex-direction:column;align-items:stretch;gap:4px;"></div>',
             '</div>',
             '<div id="la_settings"></div>',
             '<div id="la_log"></div>',
@@ -1679,6 +1687,12 @@
             bar.style.display = show ? 'flex' : 'none';
             if (show) renderRefBar();
         });
+        el('la_manage').addEventListener('click', () => {
+            settings.barOpen = !settings.barOpen;
+            applyManageState();
+            persist();
+        });
+        applyManageState();
         el('la_sess').addEventListener('change', () => switchSession(el('la_sess').value));
         el('la_sessnew').addEventListener('click', () => newSession());
         el('la_sessbr').addEventListener('click', () => branchAt());
@@ -1787,6 +1801,17 @@
         n = Number(n) || 0;
         if (n < 1000) return String(n);
         return (n < 10000 ? (n / 1000).toFixed(1) : Math.round(n / 1000)) + 'k';
+    }
+
+    function applyManageState() {
+        const area = el('la_manage_area');
+        const btn = el('la_manage');
+        if (!area || !btn) return;
+        const open = !!settings.barOpen;
+        area.style.display = open ? 'flex' : 'none';
+        btn.textContent = open ? '\u25B4' : '\u22EE';
+        btn.title = (open ? 'Hide' : 'Show') + ' document / session / preset management';
+        btn.classList.toggle('la_on', open);
     }
 
     function refreshDocBar() {
