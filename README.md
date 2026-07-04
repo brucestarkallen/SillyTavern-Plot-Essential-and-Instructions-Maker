@@ -36,9 +36,9 @@ Option B — manual:
 - **Document dropdown** — switch between documents; each has its own conversation, preset, and undo stack.
 - **Preset dropdown (🧠)** — which agent brain this document uses. Remembered per document; switching is instant and applies from the next message.
 - **+ New / Ren / Dup / Del** — Dup copies text + preset with a fresh conversation.
-- **Imp** — opens an editor window: paste text (or press its Paste button to pull the clipboard), name it, Create.
-- **Exp** — downloads the document as `.md`. **📋** copies the whole document (with an `execCommand` fallback, so it works on http/LAN setups where the clipboard API is blocked).
-- **View** — the document full-screen in a draggable window: monospace textarea + Save for manual editing anytime, plus Copy/Paste. Manual saves also go on the Undo stack.
+- **Imp** — opens an editor window: press **File** to pick a text file from your device (`.md`, `.txt`, `.json`, `.yaml`, anything text — the filename becomes the document name), or Paste/type, then Create. Documents are stored as raw text, so any text-based format works; if the agent should *respect* a format ("keep this valid YAML"), say so in the preset.
+- **Exp** — asks for a filename, so you choose the extension (`.md`, `.json`, `.yaml`, `.txt`, …); a document named with an extension suggests it automatically. **📋** copies the whole document (with an `execCommand` fallback, so it works on http/LAN setups where the clipboard API is blocked).
+- **View** — the document full-screen in a draggable window: monospace textarea + Save for manual editing anytime, plus File/Copy/Paste (File replaces the window contents from a device file). Manual saves also go on the Undo stack.
 
 ## How editing works
 
@@ -50,7 +50,8 @@ Every request sends the agent: its preset prompt + the docedits protocol (append
   {"find": "verbatim excerpt from the document", "replace": "new text", "reason": "why"},
   {"insert_after": "verbatim anchor line", "replace": "new paragraph placed under the anchor line", "reason": "why"},
   {"append": true, "replace": "text added at the end", "reason": "why"},
-  {"replace_all": true, "replace": "entire new document", "reason": "only on an explicit full-rewrite request"}
+  {"replace_all": true, "replace": "entire new document", "reason": "only on an explicit full-rewrite request"},
+  {"doc": "reference doc name", "find": "…", "replace": "…", "reason": "optional doc field targets an attached reference"}
 ]
 </docedits>
 ```
@@ -70,6 +71,16 @@ Before each applied batch the whole document is backed up onto that document's *
 - **Retry** regenerates the last agent reply as a swipe — navigate with **‹ n/m ›** under it; **›** past the end generates a new alternative. Each swipe re-renders its own edit cards.
 - **✎** on your messages: edit and continue from there (later turns are removed). **📋** copy, **✕** delete per message. **Del last** removes the last exchange, **Clear** wipes the conversation (document untouched).
 - Conversation history is stored per document, capped at 80 entries; the "History depth" setting controls how many recent messages are actually sent per request (default 16 — the full document is always sent regardless).
+
+## Reference documents (compare & cross-edit)
+
+The **🔗** button (next to the preset dropdown) attaches other documents to the active conversation as **read-only references**. They are sent in full every turn as `[REFERENCE DOCUMENT: name]` blocks — so watch tokens with several large files — and the subtitle shows `+N refs`.
+
+Typical flow for "compare X and Y, then use Y as the base": open (or create) a conversation with **Y active**, attach **X** as a reference, then just talk — "compare these two", then "merge X's extra fields into Y". Because Y is the main `[DOCUMENT]`, edits land on Y by default; the conversation and its history stay in one place.
+
+The agent can also target a reference directly: any edit may carry `"doc": "document name"`, and it applies to that attached document instead (the card shows `→ name`). So you can equally stay in X's conversation and say "edit Y from here on" — the direction lives in your words, not in the UI. Targets are restricted to the active document and its attached references; unknown or ambiguous names fail as a clean card status, never a wrong-document write.
+
+**Undo is batch-aware:** one press reverts the most recent applied batch on *every* document it touched. Older steps fall back to per-document undo on the active document (a document changed since a batch is skipped with a note — switch to it and press Undo there). Deleting a document detaches it from all conversations; renaming is safe (references are tracked by id, and the agent always sees current names).
 
 ## Presets (many brains, one editing engine)
 
@@ -95,12 +106,16 @@ The gear drawer always targets the *active document's* preset: live-editable tex
 
 ## Development
 
-`node --check index.js` plus `node test.js` (loads the extension under a stub `SillyTavern` global — proving a clean load and that the 3s init fallback can't crash — then runs 26 unit tests on the parsing/locating/applying engine).
+`node --check index.js` plus `node test.js` (loads the extension under a stub `SillyTavern` global — proving a clean load and that the 3s init fallback can't crash — then runs 36 unit tests on the parsing/locating/applying engine).
 
 ## License
 
 MIT.
 
 ## Changelog
+
+- **0.3.0** — reference documents: attach other docs to a conversation via 🔗 (sent read-only as `[REFERENCE DOCUMENT]` blocks), agent can target any attached doc per-edit with `"doc": "name"`, cards show the target, Undo reverts whole batches across every document they touched.
+
+- **0.2.0** — import from device files via a File picker in the editor window (any text format; filename becomes the document name), export with a chosen filename/extension instead of forced `.md`, per-extension MIME types.
 
 - **0.1.0** — first build: global document store with per-doc conversations/presets/undo, docedits protocol (find/replace, insert_after, append, replace_all), diff cards with fuzzy matching, streaming + thinking + swipes, draggable View/Edit and preset editor windows, import/export/copy, wand menu + `/lore`.

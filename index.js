@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.1.0';
+    const VERSION = '0.3.0';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -54,6 +54,7 @@
         '  {"find": "verbatim excerpt copied character-for-character from the document", "replace": "new text", "reason": "short why"},',
         '  {"insert_after": "verbatim anchor line copied from the document", "replace": "new paragraph placed on a new line under the anchor line", "reason": "short why"},',
         '  {"append": true, "replace": "text added at the end of the document", "reason": "short why"},',
+        '  {"doc": "Name Of A Reference Document", "find": "verbatim excerpt from that reference document", "replace": "new text", "reason": "the doc field targets a reference document"},',
         '  {"replace_all": true, "replace": "entire new document text", "reason": "only when the user explicitly asked for a full rewrite"}',
         ']',
         '</docedits>',
@@ -66,6 +67,7 @@
         '5. At most ONE docedits block per reply, placed at the very END of the reply, after a brief prose explanation of what you changed and why. If nothing needs changing, output no block at all.',
         '6. In prose, refer to the mechanism as the "docedits block" in plain words. The literal angle-bracket tag must appear ONLY around the actual JSON block, never inside explanations.',
         '7. If the document is empty, draft it with "append" edits (one per section works well).',
+        '8. Read-only context may appear as [REFERENCE DOCUMENT: name] blocks. By default every edit applies to the main [DOCUMENT]. To edit a reference document instead, add "doc": "its exact name" to that edit object \u2014 and whenever any reference documents are present, include "doc" on EVERY edit so the target is never ambiguous. Copy "find"/"insert_after" character-for-character from the document you are targeting.',
     ].join('\n');
 
     // ------------------------------------------------------------------
@@ -79,7 +81,8 @@
         streaming: true,
         showThinking: true,
         activeDocId: '',
-        docs: [],      // [{id, name, text, updated, presetId, history, undo}]
+        batchLog: [],  // ids of applied batches, newest last (cross-doc undo)
+        docs: [],      // [{id, name, text, updated, presetId, history, undo, refs}]
         presets: [],   // [{id, name, prompt}]
     };
 
@@ -147,12 +150,25 @@
         return n || 'document';
     }
 
+    function mimeForName(n) {
+        const m = String(n).toLowerCase().match(/\.([a-z0-9]{1,8})$/);
+        const ext = m ? m[1] : 'md';
+        const map = {
+            md: 'text/markdown', markdown: 'text/markdown', json: 'application/json',
+            yaml: 'application/x-yaml', yml: 'application/x-yaml', xml: 'application/xml',
+            csv: 'text/csv', html: 'text/html', txt: 'text/plain',
+        };
+        return (map[ext] || 'text/plain') + ';charset=utf-8';
+    }
+
     function downloadText(name, text) {
         try {
-            const blob = new Blob([String(text ?? '')], { type: 'text/markdown;charset=utf-8' });
+            const base = safeFileName(name);
+            const fname = /\.[a-z0-9]{1,8}$/i.test(base) ? base : base + '.md';
+            const blob = new Blob([String(text ?? '')], { type: mimeForName(fname) });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = safeFileName(name) + '.md';
+            a.download = fname;
             document.body.appendChild(a);
             a.click();
             a.remove();
@@ -202,6 +218,7 @@
         if (!settingsHasPreset(d.presetId)) d.presetId = PRESET_PE_ID;
         if (!Array.isArray(d.history)) d.history = [];
         if (!Array.isArray(d.undo)) d.undo = [];
+        if (!Array.isArray(d.refs)) d.refs = [];
         return d;
     }
 
@@ -218,6 +235,7 @@
             presetId: PRESET_PE_ID,
             history: [],
             undo: [],
+            refs: [],
         });
     }
 
@@ -247,6 +265,28 @@
         return p;
     }
 
+    // Resolve an agent-provided "doc" name against a set of documents:
+    // exact -> case-insensitive -> unique partial. Ambiguity returns null.
+    function resolveDocByName(docs, name) {
+        const n = String(name || '').trim();
+        if (!n) return null;
+        let hit = docs.find(d => d.name === n);
+        if (hit) return hit;
+        const low = n.toLowerCase();
+        const ci = docs.filter(d => String(d.name).trim().toLowerCase() === low);
+        if (ci.length === 1) return ci[0];
+        const part = docs.filter(d => String(d.name).toLowerCase().includes(low));
+        if (part.length === 1) return part[0];
+        return null;
+    }
+
+    function refsOf(doc) {
+        if (!doc || !Array.isArray(doc.refs)) return [];
+        return doc.refs
+            .map(id => settings.docs.find(d => d.id === id))
+            .filter(d => d && d.id !== doc.id);
+    }
+
     function pushHistory(doc, role, content, think) {
         if (!doc) return;
         const entry = { role, content: String(content ?? '') };
@@ -271,10 +311,10 @@
         }
     }
 
-    function pushUndo(doc, beforeText, label) {
+    function pushUndo(doc, beforeText, label, batch) {
         if (!doc) return;
         if (!Array.isArray(doc.undo)) doc.undo = [];
-        doc.undo.push({ ts: Date.now(), text: String(beforeText ?? ''), label: String(label || 'edit') });
+        doc.undo.push({ ts: Date.now(), text: String(beforeText ?? ''), label: String(label || 'edit'), batch: batch || null });
         while (doc.undo.length > 8) doc.undo.shift();
         // Also cap total backup weight so settings.json stays sane.
         let total = doc.undo.reduce((n, u) => n + (u.text ? u.text.length : 0), 0);
@@ -336,10 +376,11 @@
             if (!e || typeof e !== 'object') continue;
             const replace = String(e.replace ?? '');
             const reason = String(e.reason ?? '');
-            if (e.replace_all === true) { edits.push({ type: 'replace_all', find: null, replace, reason, status: 'pending' }); continue; }
-            if (e.append === true) { edits.push({ type: 'append', find: null, replace, reason, status: 'pending' }); continue; }
-            if (typeof e.insert_after === 'string' && e.insert_after.length) { edits.push({ type: 'insert', find: e.insert_after, replace, reason, status: 'pending' }); continue; }
-            if (typeof e.find === 'string' && e.find.length) { edits.push({ type: 'replace', find: e.find, replace, reason, status: 'pending' }); continue; }
+            const docName = (typeof e.doc === 'string' && e.doc.trim()) ? e.doc.trim() : null;
+            if (e.replace_all === true) { edits.push({ type: 'replace_all', find: null, replace, reason, docName, status: 'pending' }); continue; }
+            if (e.append === true) { edits.push({ type: 'append', find: null, replace, reason, docName, status: 'pending' }); continue; }
+            if (typeof e.insert_after === 'string' && e.insert_after.length) { edits.push({ type: 'insert', find: e.insert_after, replace, reason, docName, status: 'pending' }); continue; }
+            if (typeof e.find === 'string' && e.find.length) { edits.push({ type: 'replace', find: e.find, replace, reason, docName, status: 'pending' }); continue; }
             // Unknown shape — skip silently rather than crash or half-apply.
         }
         return { edits };
@@ -538,33 +579,56 @@
     }
 
     function applyEdits(list) {
-        const doc = activeDoc();
-        if (!doc) { toast('No document selected.', 'warning'); return; }
+        const main = activeDoc();
+        if (!main) { toast('No document selected.', 'warning'); return; }
         const todo = (list || []).filter(e => e && e.status === 'pending');
         if (!todo.length) { renderEditCards(); return; }
 
-        let text = String(doc.text || '');
-        const before = text;
-        const applied = [];
+        // Edits may target the main document (default) or any attached
+        // reference document via the "doc" field. Each target keeps its own
+        // evolving working text so a batch applies sequentially per document.
+        const allowed = [main, ...refsOf(main)];
+        const work = new Map(); // docId -> {doc, before, text, count}
+        const getWork = (d) => {
+            let w = work.get(d.id);
+            if (!w) { w = { doc: d, before: String(d.text || ''), text: String(d.text || ''), count: 0 }; work.set(d.id, w); }
+            return w;
+        };
         for (const edit of todo) {
-            const res = applyEditToText(text, edit);
+            let target = main;
+            if (edit.docName) {
+                target = resolveDocByName(allowed, edit.docName);
+                if (!target) {
+                    edit.status = 'failed: document "' + edit.docName + '" is not this conversation\u2019s document or an attached reference (\uD83D\uDD17)';
+                    continue;
+                }
+            }
+            const w = getWork(target);
+            const res = applyEditToText(w.text, edit);
             if (res.ok) {
-                text = res.text;
-                edit.status = 'applied' + (res.note || '');
-                applied.push(edit);
+                w.text = res.text;
+                w.count++;
+                edit.status = 'applied' + (res.note || '') + (target.id !== main.id ? ' \u2192 ' + target.name : '');
             } else {
-                edit.status = 'failed: ' + res.reason;
+                edit.status = 'failed: ' + res.reason + (target.id !== main.id ? ' (in "' + target.name + '")' : '');
             }
         }
-        if (applied.length) {
-            pushUndo(doc, before, applied.length + ' edit(s)');
-            doc.text = text;
-            doc.updated = Date.now();
+        const changed = [...work.values()].filter(w => w.count > 0);
+        if (changed.length) {
+            const batchId = uid();
+            for (const w of changed) {
+                pushUndo(w.doc, w.before, w.count + ' edit(s)', batchId);
+                w.doc.text = w.text;
+                w.doc.updated = Date.now();
+            }
+            if (!Array.isArray(settings.batchLog)) settings.batchLog = [];
+            settings.batchLog.push(batchId);
+            while (settings.batchLog.length > 8) settings.batchLog.shift();
             persist();
-            const note = 'Applied ' + applied.length + ' edit(s) to "' + doc.name + '".';
-            pushHistory(doc, 'note', note);
+            const note = 'Applied: ' + changed.map(w => w.count + ' edit(s) \u2192 "' + w.doc.name + '"').join(', ') + '.';
+            pushHistory(main, 'note', note);
             renderHistory();
-            syncOpenDocEditor(doc, before);
+            for (const w of changed) syncOpenDocEditor(w.doc, w.before);
             updateSub();
             toast(note, 'success');
         }
@@ -572,6 +636,36 @@
     }
 
     function undoLast() {
+        // 1) Batch undo: revert the most recent applied batch on EVERY
+        // document it touched (main + references), newest batch first.
+        if (!Array.isArray(settings.batchLog)) settings.batchLog = [];
+        while (settings.batchLog.length) {
+            const bid = settings.batchLog[settings.batchLog.length - 1];
+            const hits = settings.docs.filter(d => Array.isArray(d.undo) && d.undo.length && d.undo[d.undo.length - 1].batch === bid);
+            const buried = settings.docs.filter(d => Array.isArray(d.undo) && d.undo.some(u => u.batch === bid) && (!d.undo.length || d.undo[d.undo.length - 1].batch !== bid));
+            settings.batchLog.pop();
+            if (!hits.length) continue; // stale id (docs deleted / fully buried) \u2014 try an older batch
+            const names = [];
+            for (const d of hits) {
+                const u = d.undo.pop();
+                const before = String(d.text || '');
+                d.text = String(u.text ?? '');
+                d.updated = Date.now();
+                names.push('"' + d.name + '"');
+                syncOpenDocEditor(d, before);
+            }
+            persist();
+            let note = 'Undid last applied batch on: ' + names.join(', ') + '.';
+            if (buried.length) note += ' Skipped ' + buried.map(d => '"' + d.name + '"').join(', ') + ' (changed since \u2014 switch to it and press Undo there).';
+            const active = activeDoc();
+            if (active) pushHistory(active, 'note', note);
+            renderHistory();
+            updateSub();
+            toast(note, 'success');
+            return;
+        }
+        // 2) Fallback: plain per-document undo on the active document
+        // (manual View\u2192Save edits, or batches older than the batch log).
         const doc = activeDoc();
         if (!doc) { toast('No document selected.', 'warning'); return; }
         const u = Array.isArray(doc.undo) ? doc.undo.pop() : null;
@@ -580,7 +674,7 @@
         doc.text = String(u.text ?? '');
         doc.updated = Date.now();
         persist();
-        const note = 'Undid last applied batch (' + (u.label || 'edit') + ') on "' + doc.name + '".';
+        const note = 'Undid (' + (u.label || 'edit') + ') on "' + doc.name + '".';
         pushHistory(doc, 'note', note);
         renderHistory();
         syncOpenDocEditor(doc, before);
@@ -702,6 +796,19 @@
             + '\n[/DOCUMENT]';
     }
 
+    function refBlock(doc) {
+        const body = String(doc.text || '');
+        return '[REFERENCE DOCUMENT: ' + (doc.name || 'Untitled') + ']\n'
+            + (body.length ? body : '(this reference document is currently empty)')
+            + '\n[/REFERENCE DOCUMENT]';
+    }
+
+    function contextBlocks(doc) {
+        const parts = refsOf(doc).map(refBlock);
+        parts.push(docBlock(doc));
+        return parts.join('\n\n');
+    }
+
     function buildMessages(doc, uptoIdx) {
         const preset = presetForDoc(doc);
         const sys = String(preset?.prompt || '').trim() + '\n\n' + DOCEDITS_PROTOCOL;
@@ -717,7 +824,7 @@
         base.forEach((h, i) => {
             let content = String(h.content ?? '');
             if (h.role === 'note') { msgs.push({ role: 'user', content: '[STATE] ' + content }); return; }
-            if (i === lastUser) content = docBlock(doc) + '\n\n' + content;
+            if (i === lastUser) content = contextBlocks(doc) + '\n\n' + content;
             msgs.push({ role: h.role === 'assistant' ? 'assistant' : 'user', content });
         });
         return msgs;
@@ -982,6 +1089,16 @@
             countEl.style.cssText = 'flex:0 0 auto;opacity:0.65;font-size:0.8em;';
 
             const btnStyle = 'cursor:pointer;border:1px solid rgba(255,255,255,0.35);background:rgba(255,255,255,0.10);color:inherit;border-radius:6px;padding:8px 14px;font-size:0.9em;flex:0 0 auto;';
+            const fileBtn = document.createElement('button');
+            fileBtn.id = 'la_viewer_file';
+            fileBtn.textContent = 'File';
+            fileBtn.title = 'Load a text file from your device (.md, .txt, .json, .yaml, \u2026) \u2014 replaces the text in this window';
+            fileBtn.style.cssText = btnStyle;
+            const fileIn = document.createElement('input');
+            fileIn.id = 'la_viewer_filein';
+            fileIn.type = 'file';
+            fileIn.accept = '.md,.markdown,.txt,.text,.json,.yaml,.yml,.xml,.toml,.ini,.csv,.log,text/*,application/json,application/x-yaml,application/xml';
+            fileIn.style.cssText = 'display:none;';
             const pasteBtn = document.createElement('button');
             pasteBtn.id = 'la_viewer_paste';
             pasteBtn.textContent = 'Paste';
@@ -1002,10 +1119,12 @@
 
             head.appendChild(titleEl);
             head.appendChild(countEl);
+            head.appendChild(fileBtn);
             head.appendChild(pasteBtn);
             head.appendChild(copyBtn);
             head.appendChild(saveBtn);
             head.appendChild(closeBtn);
+            box.appendChild(fileIn);
 
             const nameRow = document.createElement('div');
             nameRow.id = 'la_viewer_namerow';
@@ -1050,6 +1169,32 @@
             copyBtn.addEventListener('click', async () => {
                 const ok = await copyText(ta.value);
                 toast(ok ? 'Copied to clipboard.' : 'Copy failed \u2014 select the text manually.', ok ? 'success' : 'error');
+            });
+            fileBtn.addEventListener('click', () => { fileIn.value = ''; fileIn.click(); });
+            fileIn.addEventListener('change', async () => {
+                const f = fileIn.files && fileIn.files[0];
+                if (!f) return;
+                if (ta.value.trim() && !confirm('Replace the text in this window with the contents of "' + f.name + '"?')) return;
+                let text = '';
+                try {
+                    text = typeof f.text === 'function' ? await f.text() : '';
+                } catch (e) { /* fall through to FileReader */ }
+                if (!text) {
+                    text = await new Promise((resolve) => {
+                        try {
+                            const r = new FileReader();
+                            r.onload = () => resolve(String(r.result || ''));
+                            r.onerror = () => resolve('');
+                            r.readAsText(f);
+                        } catch (e) { resolve(''); }
+                    });
+                }
+                if (!text) { toast('Could not read "' + f.name + '" as text.', 'error'); return; }
+                ta.value = text;
+                updateCount();
+                const nameIn2 = el('la_viewer_name');
+                if (nameIn2 && el('la_viewer_namerow').style.display !== 'none') nameIn2.value = f.name;
+                toast('Loaded "' + f.name + '" (' + text.length.toLocaleString() + ' chars). Press ' + el('la_viewer_save').textContent + ' to keep it.', 'success');
             });
             pasteBtn.addEventListener('click', async () => {
                 try {
@@ -1146,6 +1291,7 @@
         if (!doc) { toast('No document selected.', 'warning'); return; }
         const d = makeDoc(doc.name + ' (copy)', doc.text);
         d.presetId = doc.presetId;
+        d.refs = Array.isArray(doc.refs) ? doc.refs.slice() : [];
         settings.docs.push(d);
         setActiveDoc(d.id);
         persist();
@@ -1158,6 +1304,9 @@
         if (!doc) { toast('No document selected.', 'warning'); return; }
         if (!confirm('Delete document "' + doc.name + '" (' + (doc.text || '').length.toLocaleString() + ' chars) and its conversation? This cannot be undone.')) return;
         settings.docs = settings.docs.filter(d => d.id !== doc.id);
+        for (const d of settings.docs) {
+            if (Array.isArray(d.refs)) d.refs = d.refs.filter(x => x !== doc.id);
+        }
         setActiveDoc(settings.docs[0]?.id || '');
         persist();
         renderAll();
@@ -1186,8 +1335,13 @@
     function exportDoc() {
         const doc = activeDoc();
         if (!doc) { toast('No document selected.', 'warning'); return; }
-        const ok = downloadText(doc.name, doc.text);
-        toast(ok ? 'Downloading "' + safeFileName(doc.name) + '.md"\u2026' : 'Download failed \u2014 use Copy instead.', ok ? 'success' : 'error');
+        const nm = (doc.name || 'document').trim();
+        const suggested = /\.[a-z0-9]{1,8}$/i.test(nm) ? nm : nm + '.md';
+        const v = prompt('Export as (any extension: .md, .json, .yaml, .txt \u2026):', suggested);
+        if (v === null) return;
+        const fname = v.trim() || suggested;
+        const ok = downloadText(fname, doc.text);
+        toast(ok ? 'Downloading "' + safeFileName(fname) + '"\u2026' : 'Download failed \u2014 use Copy instead.', ok ? 'success' : 'error');
     }
 
     async function copyDoc() {
@@ -1315,17 +1469,19 @@
             '  <div class="la_dbrow">',
             '    <select id="la_doc" title="Active document"></select>',
             '    <select id="la_preset" title="Agent preset (brain) for this document"></select>',
+            '    <button class="la_btn" id="la_refs" title="Attach other documents as read-only references for this conversation">\uD83D\uDD17<span id="la_refcount">0</span></button>',
             '  </div>',
             '  <div class="la_dbrow la_dbbtns">',
             '    <button class="la_btn" id="la_new" title="New empty document">+ New</button>',
             '    <button class="la_btn" id="la_dren" title="Rename document">Ren</button>',
             '    <button class="la_btn" id="la_dup" title="Duplicate document (text + preset, fresh conversation)">Dup</button>',
             '    <button class="la_btn" id="la_ddel" title="Delete document">Del</button>',
-            '    <button class="la_btn" id="la_imp" title="Import: paste text into an editor window">Imp</button>',
+            '    <button class="la_btn" id="la_imp" title="Import: pick a file (.md/.json/.yaml/2026) or paste text">Imp</button>',
             '    <button class="la_btn" id="la_exp" title="Export: download as .md">Exp</button>',
             '    <button class="la_btn" id="la_dcopy" title="Copy the whole document to the clipboard">\uD83D\uDCCB</button>',
             '    <button class="la_btn" id="la_view" title="View/Edit the document in a window">View</button>',
             '  </div>',
+            '  <div class="la_dbrow" id="la_refbar" style="display:none;flex-direction:column;align-items:stretch;gap:4px;"></div>',
             '</div>',
             '<div id="la_settings"></div>',
             '<div id="la_log"></div>',
@@ -1377,6 +1533,12 @@
             persist();
             refreshPresetTools();
             toast('Preset for "' + doc.name + '" \u2192 ' + (presetForDoc(doc)?.name || '?') + ' (used from the next message).', 'info');
+        });
+        el('la_refs').addEventListener('click', () => {
+            const bar = el('la_refbar');
+            const show = !bar.style.display || bar.style.display === 'none';
+            bar.style.display = show ? 'flex' : 'none';
+            if (show) renderRefBar();
         });
         el('la_new').addEventListener('click', () => newDoc());
         el('la_dren').addEventListener('click', () => renameDoc());
@@ -1502,14 +1664,66 @@
         const doc = activeDoc();
         psel.disabled = !doc;
         if (doc) psel.value = presetForDoc(doc)?.id || '';
+        const refsBtn = el('la_refs');
+        if (refsBtn) refsBtn.disabled = !doc;
+        updateRefCount();
+    }
+
+    function updateRefCount() {
+        const c = el('la_refcount');
+        if (!c) return;
+        c.textContent = String(refsOf(activeDoc()).length);
+    }
+
+    function renderRefBar() {
+        const bar = el('la_refbar');
+        if (!bar) return;
+        const doc = activeDoc();
+        bar.innerHTML = '';
+        if (!doc) {
+            bar.innerHTML = '<span class="la_refhint">No document selected.</span>';
+            return;
+        }
+        const hint = document.createElement('div');
+        hint.className = 'la_refhint';
+        hint.textContent = 'Read-only references \u2014 sent in full with every message (adds tokens). Edits target "' + doc.name + '" unless the agent names a reference; tell it e.g. "use Y as the base and merge X into it".';
+        bar.appendChild(hint);
+        const others = settings.docs.filter(d => d.id !== doc.id);
+        if (!others.length) {
+            const sp = document.createElement('span');
+            sp.className = 'la_refhint';
+            sp.textContent = 'No other documents exist yet.';
+            bar.appendChild(sp);
+            return;
+        }
+        for (const d of others) {
+            const lab = document.createElement('label');
+            lab.className = 'la_refitem';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = doc.refs.includes(d.id);
+            cb.addEventListener('change', () => {
+                if (cb.checked) { if (!doc.refs.includes(d.id)) doc.refs.push(d.id); }
+                else doc.refs = doc.refs.filter(x => x !== d.id);
+                persist();
+                updateRefCount();
+                updateSub();
+            });
+            const sp = document.createElement('span');
+            sp.textContent = oneLine(d.name).slice(0, 34) + '  (' + (d.text || '').length.toLocaleString() + ' chars)';
+            lab.appendChild(cb);
+            lab.appendChild(sp);
+            bar.appendChild(lab);
+        }
     }
 
     function updateSub() {
         const sub = el('la_sub');
         if (!sub) return;
         const doc = activeDoc();
+        const refN = refsOf(doc).length;
         sub.textContent = 'v' + VERSION + (doc
-            ? ' \u00B7 ' + oneLine(doc.name).slice(0, 24) + ' \u00B7 ' + (doc.text || '').length.toLocaleString() + ' chars'
+            ? ' \u00B7 ' + oneLine(doc.name).slice(0, 24) + ' \u00B7 ' + (doc.text || '').length.toLocaleString() + ' chars' + (refN ? ' +' + refN + ' ref' + (refN > 1 ? 's' : '') : '')
             : ' \u00B7 no document');
     }
 
@@ -1678,7 +1892,7 @@
                     ? '(entire document \u2014 full rewrite)'
                     : edit.find;
             card.innerHTML =
-                '<div class="la_card_top"><b>' + editTypeLabel(edit) + '</b><span>' + esc(edit.reason || '') + '</span>' +
+                '<div class="la_card_top"><b>' + editTypeLabel(edit) + (edit.docName ? ' \u2192 ' + esc(edit.docName) : '') + '</b><span>' + esc(edit.reason || '') + '</span>' +
                 (edit.status === 'pending'
                     ? '<button class="la_btn" data-la-apply="' + idx + '">Apply</button><button class="la_btn" data-la-skip="' + idx + '">Skip</button>'
                     : '') +
@@ -1719,6 +1933,8 @@
 
     function renderAll() {
         refreshDocBar();
+        const rb = el('la_refbar');
+        if (rb && rb.style.display !== 'none') renderRefBar();
         refreshPresetTools();
         renderHistory();
         renderEditCards();
@@ -1826,7 +2042,7 @@
     try {
         globalThis.__loreAgentDebug = {
             VERSION, findBlock, parseDocEdits, stripBlocks, splitThinking,
-            normChars, levenshtein, locate, applyEditToText, grow,
+            normChars, levenshtein, locate, applyEditToText, grow, mimeForName, resolveDocByName,
         };
     } catch (e) { /* ignore */ }
 })();
