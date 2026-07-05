@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.7.0';
+    const VERSION = '0.8.0';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -26,16 +26,43 @@
 
     const PRESET_PE_ID = 'seed_pe_maker';
     const PRESET_AI_ID = 'seed_ai_instructions';
+    const PRESET_WB_ID = 'seed_worldbook_maker';
+
+    // Full working default (not a placeholder): builds a usable SillyTavern
+    // worldbook on day one. Attach the Plot Essential as a reference (the link
+    // button) so entries stay consistent with the spine.
+    const WORLDBOOK_MAKER_PROMPT = [
+        'You are a worldbook architect for SillyTavern. You build and maintain a WORLDBOOK: the large body of world lore that lives OUTSIDE the Plot Essential (PE) - the encyclopedia to the PE spine. NPCs the story has not yet reached, locations, factions, history, items, cultures, magic/tech systems.',
+        '',
+        'You edit the worldbook document through the docedits protocol (find/replace, insert_after, append). The document holds a single JSON array of worldbook entries. Each entry object has this shape:',
+        '  {"name":"Short unique title","keys":["keyword","synonym","proper noun"],"content":"The lore text the model reads when this entry fires.","strategy":"green","order":100,"comment":"optional author note"}',
+        '',
+        'STRATEGY per entry (maps to how SillyTavern activates it):',
+        '- "blue"  = always in context. Use ONLY for a tiny amount of world-spine lore that must never be absent. Most worlds keep the spine in the PE instead, so use blue sparingly or not at all. Blue entries may have empty keys.',
+        '- "green" = fires when one of its keys appears in recent conversation. THIS IS THE DEFAULT for almost every entry. Give each green entry a deliberate, generous key list: the proper name, common aliases/epithets, and the words a scene would actually use. Keys match case-insensitively.',
+        '- "chain" = semantic/vector activation only (fires when the conversation is semantically related, if the user has vectors enabled). Never use "chain" alone: if the user has no vectors the entry becomes invisible. Instead author for BOTH - keep strategy "green" with real keys, and the extension also marks green entries vector-eligible so they ALSO fire semantically when vectors are on. Only use bare "chain" if the user explicitly says they always run vectors.',
+        '',
+        'RULES:',
+        '1. ONE TOPIC PER ENTRY. One NPC, one place, one faction - never bundle several. Tight single-topic entries embed and retrieve better and keep keyword matching clean.',
+        '2. Default every entry to "green" with strong keys. Reserve "blue" for genuine always-on spine facts (rare). Do not invent "chain" entries unless told the user always runs vectors.',
+        '3. Consistency with the Plot Essential: if a [REFERENCE DOCUMENT] holding the PE is present, treat it as canon - match its names, facts, tone and timeline exactly, and do NOT duplicate what the PE already states as spine. The worldbook is for lore BEYOND the PE. If the story promotes a background entry into spine-critical status, say so in prose and suggest moving it into the PE (the user drives that).',
+        '4. "content" is what the AI reads at runtime - clean, self-contained lore prose, no meta commentary inside content. Split long entries into linked entries rather than one giant block.',
+        '5. "name" must be unique in the document. "order" defaults to 100 (lower = inserted earlier); leave it unless the user wants priority control.',
+        '6. Keep the document a single valid JSON array at all times. Append new entries inside the array; edit an entry with a surgical find/replace on its text. Never break JSON validity.',
+        '7. When the document is empty, initialize it with an append edit whose replace value is a JSON array (start with [] or with the first entries).',
+    ].join('\n');
 
     const DEFAULT_PRESET_PROMPTS = {
         [PRESET_PE_ID]: 'You are a world-lore architect who edits the document with surgical docedits. (Placeholder — open this preset\'s Edit button and paste the full Plot Essential Maker instructions.)',
         [PRESET_AI_ID]: 'You are an expert author of AI instruction sets who edits the document with surgical docedits. (Placeholder — open this preset\'s Edit button and paste the full instructions.)',
+        [PRESET_WB_ID]: WORLDBOOK_MAKER_PROMPT,
     };
 
     function defaultPresets() {
         return [
             { id: PRESET_PE_ID, name: 'Plot Essential Maker', prompt: DEFAULT_PRESET_PROMPTS[PRESET_PE_ID] },
             { id: PRESET_AI_ID, name: 'AI Instructions Maker', prompt: DEFAULT_PRESET_PROMPTS[PRESET_AI_ID] },
+            { id: PRESET_WB_ID, name: 'Worldbook Maker', prompt: DEFAULT_PRESET_PROMPTS[PRESET_WB_ID] },
         ];
     }
 
@@ -1309,6 +1336,8 @@
         el('la_viewer_name').value = String(opts.nameValue || '');
         const ta = el('la_viewer_ta');
         ta.value = String(opts.text ?? '');
+        ta.readOnly = !!opts.readonlyNote;
+        ta.style.opacity = opts.readonlyNote ? '0.92' : '1';
         el('la_viewer_save').textContent = String(opts.saveLabel || 'Save');
         box._onSave = (typeof opts.onSave === 'function') ? opts.onSave : null;
         box._closeOnSave = !!opts.closeOnSave;
@@ -1436,6 +1465,18 @@
         toast('Created "' + d.name + '".', 'success');
     }
 
+    function newWorldbook() {
+        const v = prompt('Name for the new worldbook:', 'Worldbook');
+        if (v === null) return;
+        const d = makeDoc((v.trim() || 'Worldbook') + (/\.json$/i.test(v) ? '' : '.json'), '[]');
+        d.presetId = PRESET_WB_ID;
+        settings.docs.push(d);
+        setActiveDoc(d.id);
+        persist();
+        renderAll();
+        toast('Created worldbook "' + d.name + '". Attach your Plot Essential via \uD83D\uDD17 so entries stay consistent, then ask the agent to add entries.', 'success');
+    }
+
     function renameDoc() {
         const doc = activeDoc();
         if (!doc) { toast('No document selected.', 'warning'); return; }
@@ -1512,9 +1553,38 @@
         toast(ok ? 'Document copied (' + (doc.text || '').length.toLocaleString() + ' chars).' : 'Copy failed \u2014 open View and select manually.', ok ? 'success' : 'error');
     }
 
+    function worldbookPreviewText(doc) {
+        const p = parseWorldbook(doc.text);
+        if (p.error) return '(not valid worldbook JSON: ' + p.error + ')\n\nSwitch to raw editing to fix it.';
+        if (!p.entries.length) return '(no entries yet)';
+        const icon = { blue: '\uD83D\uDD35', green: '\uD83D\uDFE2', chain: '\uD83D\uDD17' };
+        return p.entries.map((e, i) => {
+            const head = (icon[e.strategy] || '\u2022') + ' ' + (e.name || '(unnamed)') + '  [' + e.strategy + ']';
+            const keys = e.keys.length ? '\n   keys: ' + e.keys.join(', ') : (e.strategy === 'green' ? '\n   keys: (none \u2014 will not fire!)' : '');
+            const body = e.content ? '\n   ' + e.content.replace(/\n/g, '\n   ') : '\n   (empty content)';
+            return (i + 1) + '. ' + head + keys + body;
+        }).join('\n\n');
+    }
+
     function viewDoc() {
         const doc = activeDoc();
         if (!doc) { toast('No document selected.', 'warning'); return; }
+        const isWB = docLooksLikeWorldbook(doc);
+        if (isWB) {
+            const p = parseWorldbook(doc.text);
+            const count = p.entries.length;
+            showEditor({
+                title: '\uD83C\uDF10 ' + doc.name + ' \u00B7 ' + count + ' entr' + (count === 1 ? 'y' : 'ies'),
+                text: worldbookPreviewText(doc),
+                saveLabel: 'Edit raw JSON',
+                readonlyNote: 'Read-only worldbook preview. Tap "Edit raw JSON" to change the underlying JSON, or ask the agent to edit entries.',
+                bound: { kind: 'wbpreview', id: doc.id },
+                onSave: () => { // "Edit raw JSON" reopens in raw mode
+                    viewDocRaw(doc.id);
+                },
+            });
+            return;
+        }
         showEditor({
             title: '\uD83D\uDCC4 ' + doc.name,
             text: doc.text,
@@ -1524,6 +1594,32 @@
                 const d = settings.docs.find(x => x.id === doc.id);
                 if (!d) { toast('Document no longer exists.', 'error'); return; }
                 if (text === d.text) { toast('No changes.', 'info'); return; }
+                pushUndo(d, d.text, 'manual edit');
+                d.text = text;
+                d.updated = Date.now();
+                persist();
+                updateSub();
+                toast('Saved "' + d.name + '" (' + text.length.toLocaleString() + ' chars).', 'success');
+            },
+        });
+    }
+
+    function viewDocRaw(id) {
+        const doc = settings.docs.find(x => x.id === id) || activeDoc();
+        if (!doc) return;
+        showEditor({
+            title: '\uD83D\uDCC4 ' + doc.name + ' (raw JSON)',
+            text: doc.text,
+            saveLabel: 'Save',
+            bound: { kind: 'doc', id: doc.id },
+            onSave: (text) => {
+                const d = settings.docs.find(x => x.id === doc.id);
+                if (!d) { toast('Document no longer exists.', 'error'); return; }
+                if (text === d.text) { toast('No changes.', 'info'); return; }
+                const chk = parseWorldbook(text);
+                if (chk.error) {
+                    if (!confirm('This is not valid worldbook JSON (' + chk.error + '). Save anyway?')) return;
+                }
                 pushUndo(d, d.text, 'manual edit');
                 d.text = text;
                 d.updated = Date.now();
@@ -1641,11 +1737,13 @@
             '    <div class="la_dbrow la_grp">',
             '      <span class="la_grplbl" title="Document actions">Doc</span>',
             '      <button class="la_btn" id="la_new" title="New empty document">+ New</button>',
+            '      <button class="la_btn" id="la_newwb" title="New worldbook (JSON, assigned to the Worldbook Maker preset)">+WB</button>',
             '      <button class="la_btn" id="la_dren" title="Rename document">Ren</button>',
             '      <button class="la_btn" id="la_dup" title="Duplicate document (text + preset, fresh conversation)">Dup</button>',
             '      <button class="la_btn" id="la_ddel" title="Delete document">Del</button>',
             '      <button class="la_btn" id="la_imp" title="Import: pick a file (.md / .json / .yaml \u2026) or paste text">Imp</button>',
             '      <button class="la_btn" id="la_exp" title="Export: download with a chosen filename/extension">Exp</button>',
+            '      <button class="la_btn" id="la_wbexp" title="Export as SillyTavern World Info (.json) \u2014 for worldbook documents">\uD83C\uDF10\u2192ST</button>',
             '      <button class="la_btn" id="la_dcopy" title="Copy the whole document to the clipboard">\uD83D\uDCCB</button>',
             '    </div>',
             '    <div class="la_dbrow la_grp">',
@@ -1727,11 +1825,13 @@
         el('la_sessren').addEventListener('click', () => renameSession());
         el('la_sessdel').addEventListener('click', () => deleteSession());
         el('la_new').addEventListener('click', () => newDoc());
+        el('la_newwb').addEventListener('click', () => newWorldbook());
         el('la_dren').addEventListener('click', () => renameDoc());
         el('la_dup').addEventListener('click', () => dupDoc());
         el('la_ddel').addEventListener('click', () => deleteDoc());
         el('la_imp').addEventListener('click', () => importDoc());
         el('la_exp').addEventListener('click', () => exportDoc());
+        el('la_wbexp').addEventListener('click', () => exportWorldbookST());
         el('la_dcopy').addEventListener('click', () => copyDoc());
         el('la_view').addEventListener('click', () => viewDoc());
         el('la_retry').addEventListener('click', () => retryLast());
@@ -1874,6 +1974,8 @@
         if (doc) psel.value = presetForDoc(doc)?.id || '';
         const refsBtn = el('la_refs');
         if (refsBtn) refsBtn.disabled = !doc;
+        const wbBtn = el('la_wbexp');
+        if (wbBtn) wbBtn.style.display = (doc && docLooksLikeWorldbook(doc)) ? '' : 'none';
         updateRefCount();
     }
 
@@ -2311,12 +2413,155 @@
     // Fallback in case APP_READY already fired or is unavailable.
     setTimeout(init, 3000);
 
+    // ------------------------------------------------------------------
+    // Worldbook engine: parse the document's JSON entry array, and convert
+    // to SillyTavern World Info JSON for one-click import.
+    // ------------------------------------------------------------------
+
+    // Parse a worldbook document (a JSON array of entry objects). Tolerant of
+    // a top-level array or an object with an `entries` array. Returns
+    // {entries:[...], error?:string}. Never throws.
+    function parseWorldbook(text) {
+        const raw = String(text || '').trim();
+        if (!raw) return { entries: [] };
+        let data;
+        try { data = JSON.parse(raw); }
+        catch (e) {
+            try { data = JSON.parse(raw.replace(/,\s*([\]}])/g, '$1')); }
+            catch (e2) { return { entries: [], error: 'not valid JSON: ' + e2.message }; }
+        }
+        let arr = null;
+        if (Array.isArray(data)) arr = data;
+        else if (data && Array.isArray(data.entries)) arr = data.entries;
+        else if (data && data.entries && typeof data.entries === 'object') arr = Object.values(data.entries); // ST format: entries keyed by index
+        if (!arr) return { entries: [], error: 'expected a JSON array of entries' };
+        const entries = [];
+        for (const e of arr) {
+            if (!e || typeof e !== 'object') continue;
+            const name = String(e.name ?? e.comment ?? '').trim();
+            let keys = [];
+            if (Array.isArray(e.keys)) keys = e.keys.map(k => String(k).trim()).filter(Boolean);
+            else if (typeof e.keys === 'string') keys = e.keys.split(',').map(k => k.trim()).filter(Boolean);
+            else if (Array.isArray(e.key)) keys = e.key.map(k => String(k).trim()).filter(Boolean);
+            let strat = String(e.strategy || '').toLowerCase();
+            if (!['blue', 'green', 'chain'].includes(strat)) {
+                // infer: constant->blue, explicit vectorized->chain, else green
+                if (e.constant === true) strat = 'blue';
+                else if (e.vectorized === true && (!keys.length)) strat = 'chain';
+                else strat = 'green';
+            }
+            entries.push({
+                name: name || '(unnamed)',
+                keys,
+                content: String(e.content ?? '').trim(),
+                strategy: strat,
+                order: Number.isFinite(e.order) ? e.order : 100,
+                comment: String(e.comment ?? '').trim(),
+            });
+        }
+        return { entries };
+    }
+
+    // Author-facing lint: surface problems without blocking (empty keys on a
+    // green entry, duplicate names, empty content). Returns array of strings.
+    function lintWorldbook(entries) {
+        const warns = [];
+        const seen = new Map();
+        entries.forEach((e, i) => {
+            const label = '"' + (e.name || ('#' + (i + 1))) + '"';
+            if (e.strategy === 'green' && !e.keys.length) warns.push(label + ': green entry has no keys \u2014 it will never fire on keywords.');
+            if (!e.content) warns.push(label + ': empty content.');
+            const k = (e.name || '').toLowerCase();
+            if (k) { if (seen.has(k)) warns.push('duplicate name ' + label + '.'); else seen.set(k, i); }
+        });
+        return warns;
+    }
+
+    // Convert parsed entries to SillyTavern World Info format:
+    // { entries: { "0": {uid, key, keysecondary, comment, content, constant,
+    //   vectorized, selective, order, position, disable, ...}, ... } }
+    // Mapping: blue -> constant:true; green -> keyed selective + vectorized:true
+    // (so it also fires semantically when the user has vectors on); chain ->
+    // vectorized:true with no keys (pure semantic). This matches ST's schema.
+    function worldbookToST(entries) {
+        const out = { entries: {} };
+        entries.forEach((e, i) => {
+            const blue = e.strategy === 'blue';
+            const chain = e.strategy === 'chain';
+            const keys = (blue || chain) ? [] : e.keys.slice();
+            out.entries[String(i)] = {
+                uid: i,
+                key: keys,
+                keysecondary: [],
+                comment: e.name || '',
+                content: e.content || '',
+                constant: blue,                       // blue = always on
+                vectorized: chain || (!blue),         // green + chain are vector-eligible; blue is not
+                selective: !blue && keys.length > 0,  // keyword-selective when it has keys
+                selectiveLogic: 0,
+                addMemo: true,
+                order: Number.isFinite(e.order) ? e.order : 100,
+                position: 0,                           // before char defs (0); ST default-safe
+                disable: false,
+                excludeRecursion: false,
+                preventRecursion: false,
+                delayUntilRecursion: false,
+                probability: 100,
+                useProbability: true,
+                depth: 4,
+                group: '',
+                groupOverride: false,
+                groupWeight: 100,
+                scanDepth: null,
+                caseSensitive: null,
+                matchWholeWords: null,
+                useGroupScoring: null,
+                automationId: '',
+                role: null,
+                sticky: 0,
+                cooldown: 0,
+                delay: 0,
+                displayIndex: i,
+            };
+        });
+        return out;
+    }
+
+    function docLooksLikeWorldbook(doc) {
+        if (!doc) return false;
+        if (doc.presetId === PRESET_WB_ID) return true;
+        const t = String(doc.text || '').trim();
+        if (!t || t[0] !== '[' && t[0] !== '{') return false;
+        const p = parseWorldbook(t);
+        return !p.error && p.entries.length > 0 && p.entries.some(e => e.keys.length || e.strategy === 'blue');
+    }
+
+    function exportWorldbookST() {
+        const doc = activeDoc();
+        if (!doc) { toast('No document selected.', 'warning'); return; }
+        const p = parseWorldbook(doc.text);
+        if (p.error) { toast('Not a valid worldbook: ' + p.error + ' \u2014 ask the agent to fix the JSON.', 'error'); return; }
+        if (!p.entries.length) { toast('No worldbook entries found in this document.', 'warning'); return; }
+        const warns = lintWorldbook(p.entries);
+        const st = worldbookToST(p.entries);
+        const json = JSON.stringify(st, null, 2);
+        const base = /\.json$/i.test(doc.name) ? doc.name.replace(/\.json$/i, '') : doc.name;
+        const ok = downloadText(safeFileName(base) + '.json', json);
+        const counts = p.entries.reduce((a, e) => { a[e.strategy] = (a[e.strategy] || 0) + 1; return a; }, {});
+        let msg = ok
+            ? 'Exported ' + p.entries.length + ' entr' + (p.entries.length === 1 ? 'y' : 'ies') + ' as SillyTavern World Info ('
+                + Object.entries(counts).map(([k, v]) => v + ' ' + k).join(', ') + '). Import via ST \u2192 World Info \u2192 Import.'
+            : 'Export failed \u2014 use Copy on the document and paste into a .json file.';
+        toast(msg, ok ? 'success' : 'error');
+        if (warns.length) addBubble('note', 'Worldbook export warnings:\n\u2022 ' + warns.slice(0, 8).join('\n\u2022 ') + (warns.length > 8 ? '\n\u2022 \u2026and ' + (warns.length - 8) + ' more' : ''));
+    }
+
     // Engine internals exposed for automated testing (harmless in production).
     try {
         globalThis.__loreAgentDebug = {
             VERSION, findBlock, parseDocEdits, stripBlocks, splitThinking,
             normChars, levenshtein, locate, applyEditToText, grow, mimeForName, resolveDocByName,
-            ensureDocShape, sess,
+            ensureDocShape, sess, parseWorldbook, lintWorldbook, worldbookToST, docLooksLikeWorldbook,
         };
     } catch (e) { /* ignore */ }
 })();

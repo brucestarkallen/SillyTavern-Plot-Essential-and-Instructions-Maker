@@ -162,6 +162,59 @@ setTimeout(() => {
     sp = simSwipe(sp, 5, [{ id: 'y', status: 'pending' }], seq);
     ok(sp.length === 1 && sp[0].id === 'y', 'swiping the same reply replaces its cards');
 
+    // v0.8.0: worldbook engine
+    console.log('== worldbook parse ==');
+    const wbText = JSON.stringify([
+        { name: 'Alexia Valois', keys: ['Alexia', 'Valois', 'Sunforge heir'], content: 'Heir to House Sunforge.', strategy: 'green', order: 100 },
+        { name: 'The Standing', keys: 'Standing, Rank, ranking', content: 'Live earned position.', strategy: 'green' },
+        { name: 'World spine', keys: [], content: 'Always-on fact.', strategy: 'blue' },
+        { name: 'Deep lore', keys: [], content: 'Semantic only.', strategy: 'chain' },
+    ]);
+    const wp = D.parseWorldbook(wbText);
+    ok(wp.entries.length === 4 && !wp.error, 'parses 4 entries');
+    ok(wp.entries[1].keys.length === 3 && wp.entries[1].keys[0] === 'Standing', 'comma-string keys split to array', wp.entries[1].keys);
+    ok(wp.entries[0].strategy === 'green' && wp.entries[2].strategy === 'blue' && wp.entries[3].strategy === 'chain', 'strategies preserved');
+    ok(D.parseWorldbook('').entries.length === 0, 'empty text -> no entries, no error');
+    ok(D.parseWorldbook('{not json').error, 'invalid JSON -> error, no throw');
+    const wpObj = D.parseWorldbook('{"entries":[{"name":"X","keys":["x"],"content":"c"}]}');
+    ok(wpObj.entries.length === 1, 'accepts {entries:[...]} wrapper too');
+    // strategy inference from ST-style fields
+    const inf = D.parseWorldbook(JSON.stringify([{ comment: 'C', content: 'c', constant: true }, { comment: 'D', content: 'd', vectorized: true }]));
+    ok(inf.entries[0].strategy === 'blue' && inf.entries[1].strategy === 'chain', 'infers blue from constant, chain from bare vectorized', inf.entries.map(e => e.strategy));
+
+    console.log('== worldbook -> SillyTavern mapping ==');
+    const st = D.worldbookToST(wp.entries);
+    const e0 = st.entries['0'], e2 = st.entries['2'], e3 = st.entries['3'];
+    ok(Object.keys(st.entries).length === 4, 'ST object has 4 entries keyed by index');
+    ok(e0.key.length === 3 && e0.selective === true && e0.constant === false && e0.vectorized === true, 'green -> keyed + selective + vector-eligible, not constant', { key: e0.key.length, sel: e0.selective, con: e0.constant, vec: e0.vectorized });
+    ok(e2.constant === true && e2.key.length === 0 && e2.vectorized === false && e2.selective === false, 'blue -> constant, no keys, not vectorized', { con: e2.constant, vec: e2.vectorized });
+    ok(e3.vectorized === true && e3.key.length === 0 && e3.constant === false, 'chain -> vectorized, no keys, not constant');
+    ok(e0.uid === 0 && e0.comment === 'Alexia Valois' && typeof e0.content === 'string', 'uid/comment/content populated');
+    // schema completeness: fields ST reads must exist
+    for (const f of ['uid','key','keysecondary','comment','content','constant','vectorized','selective','order','position','disable','probability','depth']) {
+        ok(f in e0, 'ST entry has field: ' + f);
+    }
+
+    console.log('== worldbook lint ==');
+    const warns = D.lintWorldbook(D.parseWorldbook(JSON.stringify([
+        { name: 'NoKeys', keys: [], content: 'x', strategy: 'green' },
+        { name: 'Empty', keys: ['k'], content: '', strategy: 'green' },
+        { name: 'Dupe', keys: ['a'], content: 'a', strategy: 'green' },
+        { name: 'Dupe', keys: ['b'], content: 'b', strategy: 'green' },
+    ])).entries);
+    ok(warns.some(w => /never fire/.test(w)), 'lints green-without-keys');
+    ok(warns.some(w => /empty content/i.test(w)), 'lints empty content');
+    ok(warns.some(w => /duplicate/i.test(w)), 'lints duplicate names');
+
+    console.log('== worldbook detection ==');
+    ok(D.docLooksLikeWorldbook({ presetId: 'seed_worldbook_maker', text: '' }) === true, 'WB preset marks doc as worldbook');
+    ok(D.docLooksLikeWorldbook({ presetId: 'x', text: wbText }) === true, 'valid WB JSON detected by content');
+    ok(D.docLooksLikeWorldbook({ presetId: 'x', text: '# Just markdown' }) === false, 'plain markdown is not a worldbook');
+    ok(D.docLooksLikeWorldbook({ presetId: 'x', text: '' }) === false, 'empty non-WB doc is not a worldbook');
+    // round-trip: ST export re-parsed by our own parser yields same strategies
+    const round = D.parseWorldbook(JSON.stringify(D.worldbookToST(wp.entries)));
+    ok(round.entries.length === 4 && round.entries[2].strategy === 'blue' && round.entries[3].strategy === 'chain', 'ST export round-trips back through parser', round.entries.map(e => e.strategy));
+
     // v0.4.0: legacy flat-history docs must migrate into sessions losslessly
     console.log('== session migration ==');
     const legacy = { id: 'd1', name: 'Old Doc', text: 'body', history: [

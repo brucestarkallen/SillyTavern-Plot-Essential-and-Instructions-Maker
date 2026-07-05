@@ -72,6 +72,32 @@ Before each applied batch the whole document is backed up onto that document's *
 - **✎** on your messages: edit and continue from there (later turns are removed). **📋** copy, **✕** delete per message. **Del last** removes the last exchange, **Clear** wipes the conversation (document untouched).
 - Conversation history is stored per document, capped at 80 entries; the "History depth" setting controls how many recent messages are actually sent per request (default 16 — the full document is always sent regardless).
 
+## Worldbooks (the lore beyond the Plot Essential)
+
+Lore Agent can build a **SillyTavern worldbook** — the large encyclopedia of world lore that lives *outside* the Plot Essential. The PE is your always-loaded spine; the worldbook is everything that should load only when relevant (NPCs the story hasn't reached, locations, factions, history, items), so it never bloats your token budget.
+
+**Create one:** press **+WB** in the management bar (the ⋮ fold-out). You get a JSON document assigned to the **Worldbook Maker** preset. Attach your Plot Essential via 🔗 so every entry stays consistent with the spine and doesn't duplicate it, then ask the agent to add entries ("add dossiers for the Year-3 students", "add the Sunforge duelling hall"). Entries accumulate as a JSON array; **View** renders them as readable cards (🔵/🟢/🔗 · name · keys · content), and *Edit raw JSON* drops to the underlying text.
+
+**Entry strategies** map to how ST activates each entry:
+
+- 🔵 **blue** (constant) — always in context. Reserve for a tiny amount of spine lore that must never be absent; most spine lives in the PE, so blue is rare.
+- 🟢 **green** (keyword) — fires when one of its keys appears in the conversation. **This is the default for almost every entry.** The agent gives each one a deliberate key list (name, aliases, epithets, words a scene would use).
+- 🔗 **chain** (semantic/vector) — fires on semantic relatedness *if you have vectors enabled*. Never used alone, because with vectors off it becomes invisible. Instead every green entry is also exported **vector-eligible**, so it fires on keywords *and* — when you have vectors on — semantically too. Keywords are the floor that always works; vectors are a bonus layer.
+
+**Export → SillyTavern:** the **🌐→ST** button (visible for worldbook docs) downloads a `.json` in ST's exact World Info schema. Import it via **SillyTavern → World Info → Import**. Mapping: blue→`constant`, green→keyed + selective + vector-eligible, chain→pure vectorized. The export also re-imports cleanly back into Lore Agent (full round-trip), and warns about entries with no keys, empty content, or duplicate names.
+
+**PE ↔ Worldbook interaction:** the two are one world. Attach the PE while editing the worldbook (entries respect canon); attach the worldbook while editing the PE (promote a background entry into the spine when the story makes it constant). The 🔗 reference system carries the actual content both ways, and you can target either document per-edit with the agent's `"doc"` field.
+
+### Vector settings (if you enable embeddings)
+
+Don't use all the ST defaults for worldbook recall — they're tuned for chat history:
+
+- Enable vectorization **for World Info specifically** (separate toggle from chat vectorization), querying against recent messages.
+- Raise the **score threshold** (roughly 0.35–0.5) — the default is often too loose for lore and pulls marginally-related entries, wasting tokens. Tune by watching what fires.
+- Keep entries **one topic each** (the Worldbook Maker enforces this) so each embedding is semantically tight.
+- The **local/built-in embedder** is fine on Termux; only move to an API embedder if you find recall weak. Don't pay until you feel a miss.
+- Because every entry also has real keywords, if vectors are off or mis-tuned **nothing breaks** — keyword matching still fires. Vectors never become a single point of failure.
+
 ## Sessions & branching (like Continuity Copilot)
 
 Each document holds multiple **sessions** — parallel conversations about the same document. The session row (under the document row) has the session dropdown plus **+ New / Branch / Ren / Del**; the ‹ n/m › swipe arrows work on the newest agent answer of whichever session is active.
@@ -90,7 +116,7 @@ The agent can also target a reference directly: any edit may carry `"doc": "docu
 
 ## Presets (many brains, one editing engine)
 
-Two presets are seeded as **placeholders**: *Plot Essential Maker* and *AI Instructions Maker*. Open the gear → **Edit in window** and paste your real instructions over the placeholder text — prompts can be 20,000+ characters, there are no length caps anywhere. The docedits protocol is appended in code after whatever the preset says, so **never paste the protocol into a preset**, and protocol upgrades in future versions apply without touching your presets.
+Three presets are seeded: *Plot Essential Maker* and *AI Instructions Maker* (placeholders — paste your instructions), and *Worldbook Maker* (a full working prompt, ready to use). Open the gear → **Edit in window** and paste your real instructions over the placeholder text — prompts can be 20,000+ characters, there are no length caps anywhere. The docedits protocol is appended in code after whatever the preset says, so **never paste the protocol into a preset**, and protocol upgrades in future versions apply without touching your presets.
 
 The gear drawer always targets the *active document's* preset: live-editable textarea, **Edit in window** for comfortable large edits, **New** (creates + assigns to the current document), **Ren**, **Del** (built-ins can't be deleted), and **Reset default** (built-ins only). To edit a preset not assigned to any document, temporarily select it in the doc bar dropdown.
 
@@ -112,13 +138,15 @@ The gear drawer always targets the *active document's* preset: live-editable tex
 
 ## Development
 
-`node --check index.js` plus `node test.js` (loads the extension under a stub `SillyTavern` global — proving a clean load and that the 3s init fallback can't crash — then runs 45 unit tests on the parsing/locating/applying engine).
+`node --check index.js` plus `node test.js` (loads the extension under a stub `SillyTavern` global — proving a clean load and that the 3s init fallback can't crash — then runs 78 unit tests on the parsing/locating/applying engine).
 
 ## License
 
 MIT.
 
 ## Changelog
+
+- **0.8.0** — worldbooks: a **Worldbook Maker** preset (full working prompt), **+WB** quick-create, readable entry cards in View, and **🌐→ST export** to SillyTavern's World Info JSON (blue→constant, green→keyed + vector-eligible, chain→vectorized) with lint warnings and clean round-trip re-import. Parser now also reads ST's `{entries:{…}}` object-map form (fixes re-importing an ST worldbook). README documents the PE-spine / worldbook-encyclopedia model and the vector-tuning advice.
 
 - **0.7.0** — proposals are now a persistent staging area you can discuss around. Replying to talk no longer wipes pending cards (previously a chat-only answer cleared them); a refined proposal stacks below the earlier one under a divider for side-by-side comparison, with an **Apply newest** button when multiple batches are pending. Swiping the same reply still replaces its cards. The agent is told refinements stack, so "maybe it's better this way" yields one comparison card, not a re-dump.
 

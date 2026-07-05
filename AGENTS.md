@@ -18,6 +18,15 @@ A floating chat panel where the user talks to an LLM about a plain-text/markdown
 8. Conversation ops: `send`, `runGeneration` (guards doc AND session switching mid-generation; always re-syncs `pendingEdits` to the visible reply), swipes on the last assistant message, `retryLast`, edit-and-continue, per-message delete, sessions + `branchAt(idx)`.
 9. UI: panel (stylesheet-based, ST theme vars), `showEditor` floating window (**100% inline-styled — never move its styles to CSS**), `makeDraggable` (window-level pointer listeners — `setPointerCapture` is unreliable on Android WebView; drag zones: header, doc/session/ref bar, quick row), diff cards, wand-menu entry, `/lore` slash command, `init` with APP_READY + 3s fallback (guarded by `typeof document` so the node load test can't crash).
 
+## Worldbooks (v0.8.0)
+
+A worldbook is an ordinary document holding a JSON array of entry objects (`{name, keys[], content, strategy, order, comment}`), assigned to the seeded **Worldbook Maker** preset (`PRESET_WB_ID`). Its prompt (`WORLDBOOK_MAKER_PROMPT`) is a full working default, not a placeholder. The engine is pure and test-covered:
+- `parseWorldbook(text)` — tolerant parse; accepts a top-level array, `{entries:[...]}`, or ST's `{entries:{"0":{...}}}` object-map; infers strategy from ST fields (`constant`→blue, bare `vectorized`→chain). Never throws.
+- `lintWorldbook(entries)` — non-blocking author warnings (green-without-keys, empty content, duplicate names).
+- `worldbookToST(entries)` — emits ST World Info schema. Mapping: blue→`constant:true`; green→keyed + `selective:true` + `vectorized:true` (fires on keywords AND semantically when the user has vectors); chain→`vectorized:true`, no keys. Round-trips back through `parseWorldbook`.
+- `docLooksLikeWorldbook(doc)` — true if WB preset or content parses as entries. Drives the 🌐→ST export button visibility and the View card-preview mode.
+UI: **+WB** creates one (`[]` + WB preset); **View** shows read-only entry cards (`worldbookPreviewText`) with an *Edit raw JSON* path (`viewDocRaw`); **🌐→ST** exports (`exportWorldbookST`). PE↔worldbook interaction is via the existing 🔗 reference system + per-edit `"doc"` targeting — no separate sync layer. Keep keywords as the deterministic floor; vectors are always an additive bonus, never a single point of failure.
+
 ## Invariants — do not break these
 
 - Third-party extension boilerplate: `manifest.json` + single-IIFE `index.js` using only `SillyTavern.getContext()`.
