@@ -215,6 +215,33 @@ setTimeout(() => {
     const round = D.parseWorldbook(JSON.stringify(D.worldbookToST(wp.entries)));
     ok(round.entries.length === 4 && round.entries[2].strategy === 'blue' && round.entries[3].strategy === 'chain', 'ST export round-trips back through parser', round.entries.map(e => e.strategy));
 
+    // v0.9.0: per-entry field intelligence (position, order, depth, probability)
+    console.log('== worldbook per-entry fields ==');
+    const fieldsText = JSON.stringify([
+        { name: 'History of Wessex', keys: ['Wessex','kingdom'], content: 'x', strategy: 'green', position: 'before_char', order: 300 },
+        { name: 'General Aldric', keys: ['Aldric'], content: 'x', strategy: 'green', position: 'after_char', order: 200 },
+        { name: 'Active siege', keys: ['siege'], content: 'x', strategy: 'green', position: 'at_depth', depth: 2, order: 150 },
+        { name: 'Rumor', keys: ['rumor'], content: 'x', strategy: 'green', probability: 40 },
+    ]);
+    const fp = D.parseWorldbook(fieldsText);
+    ok(fp.entries[0].position === 'before_char' && fp.entries[1].position === 'after_char' && fp.entries[2].position === 'at_depth', 'position strings parsed', fp.entries.map(e => e.position));
+    ok(fp.entries[2].depth === 2, 'at_depth keeps custom depth');
+    ok(fp.entries[3].probability === 40, 'custom probability parsed');
+    ok(fp.entries[3].position === 'after_char' && fp.entries[0].order === 300, 'defaults applied where omitted');
+    const fst = D.worldbookToST(fp.entries);
+    ok(fst.entries['0'].position === 0, 'before_char -> ST position 0');
+    ok(fst.entries['1'].position === 1, 'after_char -> ST position 1');
+    ok(fst.entries['2'].position === 4 && fst.entries['2'].depth === 2, 'at_depth -> ST position 4 + depth');
+    ok(fst.entries['3'].probability === 40 && fst.entries['3'].useProbability === true, 'probability<100 sets useProbability');
+    ok(fst.entries['1'].useProbability === false && fst.entries['1'].probability === 100, 'probability 100 -> useProbability false');
+    ok(fst.entries['0'].order === 300, 'order carried to ST');
+    // ST numeric position round-trips back to friendly string
+    ok(D.normalizePosition(0) === 'before_char' && D.normalizePosition(1) === 'after_char' && D.normalizePosition(4) === 'at_depth', 'ST numeric positions normalize back');
+    ok(D.normalizePosition('BEFORE CHAR') === 'before_char' && D.normalizePosition('@depth') === 'at_depth', 'friendly aliases normalize');
+    // full round-trip preserves positions
+    const fr = D.parseWorldbook(JSON.stringify(fst));
+    ok(fr.entries[0].position === 'before_char' && fr.entries[2].position === 'at_depth' && fr.entries[2].depth === 2, 'positions survive full ST round-trip', fr.entries.map(e => e.position));
+
     // v0.4.0: legacy flat-history docs must migrate into sessions losslessly
     console.log('== session migration ==');
     const legacy = { id: 'd1', name: 'Old Doc', text: 'body', history: [

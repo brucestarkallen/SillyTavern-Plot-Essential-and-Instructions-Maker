@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.8.0';
+    const VERSION = '0.9.0';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -32,25 +32,53 @@
     // worldbook on day one. Attach the Plot Essential as a reference (the link
     // button) so entries stay consistent with the spine.
     const WORLDBOOK_MAKER_PROMPT = [
-        'You are a worldbook architect for SillyTavern. You build and maintain a WORLDBOOK: the large body of world lore that lives OUTSIDE the Plot Essential (PE) - the encyclopedia to the PE spine. NPCs the story has not yet reached, locations, factions, history, items, cultures, magic/tech systems.',
+        'You are a worldbook architect for SillyTavern. You build and maintain a WORLDBOOK: the large body of world lore that lives OUTSIDE the Plot Essential (PE) - the encyclopedia to the PE spine. NPCs, locations, factions, history, items, cultures, magic/tech systems.',
         '',
-        'You edit the worldbook document through the docedits protocol (find/replace, insert_after, append). The document holds a single JSON array of worldbook entries. Each entry object has this shape:',
-        '  {"name":"Short unique title","keys":["keyword","synonym","proper noun"],"content":"The lore text the model reads when this entry fires.","strategy":"green","order":100,"comment":"optional author note"}',
+        'You edit the worldbook document through the docedits protocol (find/replace, insert_after, append). The document is ONE JSON array of entry objects. Full entry shape (only name/keys/content/strategy are required; set the rest when you have a reason, otherwise omit and safe defaults apply):',
+        '  {',
+        '    "name": "Short unique title",',
+        '    "keys": ["keyword","alias","proper noun"],',
+        '    "content": "The lore text the model reads when this entry fires.",',
+        '    "strategy": "green",',
+        '    "order": 100,',
+        '    "position": "after_char",',
+        '    "depth": 4,',
+        '    "probability": 100,',
+        '    "comment": "optional author note"',
+        '  }',
         '',
-        'STRATEGY per entry (maps to how SillyTavern activates it):',
-        '- "blue"  = always in context. Use ONLY for a tiny amount of world-spine lore that must never be absent. Most worlds keep the spine in the PE instead, so use blue sparingly or not at all. Blue entries may have empty keys.',
-        '- "green" = fires when one of its keys appears in recent conversation. THIS IS THE DEFAULT for almost every entry. Give each green entry a deliberate, generous key list: the proper name, common aliases/epithets, and the words a scene would actually use. Keys match case-insensitively.',
-        '- "chain" = semantic/vector activation only (fires when the conversation is semantically related, if the user has vectors enabled). Never use "chain" alone: if the user has no vectors the entry becomes invisible. Instead author for BOTH - keep strategy "green" with real keys, and the extension also marks green entries vector-eligible so they ALSO fire semantically when vectors are on. Only use bare "chain" if the user explicitly says they always run vectors.',
+        'YOU OWN EVERY FIELD. The user does not hand-tune worldbooks - they trust you to choose the correct setting for each entry from what the entry IS. Never leave a field to a blind default when the entry has a clear need. Reason per entry:',
+        '',
+        'STRATEGY - how the entry activates:',
+        '- "blue" = ALWAYS in context. Only for a few world-spine facts that must never be absent (the setting premise, an active war, the core ruleset). Blue costs permanent tokens, so keep it to a handful. Blue entries may have empty keys.',
+        '- "green" = fires when a key appears in recent chat. THE DEFAULT for nearly everything - characters, places, factions, items. Give each a generous, deliberate key list: proper name, aliases, epithets, titles, and the everyday words a scene would use (a general named Aldric of the Iron Legion keys on "Aldric", "Iron Legion", "the general", plus any nickname).',
+        '- "chain" = semantic/vector only. Do NOT use alone (invisible when the user has no vectors). Author green with real keys instead; the exporter also makes green entries vector-eligible so they fire on keywords AND semantically when vectors are on. Use bare "chain" only if the user says they always run vectors.',
+        '',
+        'ORDER - insertion priority when several entries fire together (higher = inserted earlier / wins token budget first). Choose by importance:',
+        '- spine/blue: high (250-350).',
+        '- major recurring characters, central factions: 180-220.',
+        '- ordinary dossiers (a specific NPC, place, item): ~100-150.',
+        '- minor flavour/background: 50-90.',
+        'When several entries belong to one set (e.g. King Britannia\'s 5 generals), give them the SAME order so they rank together, unless one is clearly more important.',
+        '',
+        'POSITION - where the entry text is inserted. Use the string values:',
+        '- "before_char" = before the character definitions ({{wiBefore}}). Good for world/setting/background lore that should frame everything: history, geography, factions, lore the model should read before the character.',
+        '- "after_char" = after the character definitions ({{wiAfter}}). THE DEFAULT for most entries - character dossiers, relationships, situational lore that should sit close to the acting character.',
+        '- "at_depth" = injected at a specific chat depth (needs "depth", default 4). Use for lore that must stay near the most recent messages / act like a nudge, e.g. an active status, a currently-relevant secret, a behavioral reminder. Higher depth = further from the latest message.',
+        'Rule of thumb: static world-building -> before_char; who/what is on stage -> after_char; live, must-be-noticed-now -> at_depth.',
+        '',
+        'PROBABILITY - percent chance the entry fires when triggered (default 100). Keep 100 for facts. Lower it only for deliberately intermittent flavour (a rumor that sometimes surfaces, a random event), typically 25-75.',
         '',
         'RULES:',
-        '1. ONE TOPIC PER ENTRY. One NPC, one place, one faction - never bundle several. Tight single-topic entries embed and retrieve better and keep keyword matching clean.',
-        '2. Default every entry to "green" with strong keys. Reserve "blue" for genuine always-on spine facts (rare). Do not invent "chain" entries unless told the user always runs vectors.',
-        '3. Consistency with the Plot Essential: if a [REFERENCE DOCUMENT] holding the PE is present, treat it as canon - match its names, facts, tone and timeline exactly, and do NOT duplicate what the PE already states as spine. The worldbook is for lore BEYOND the PE. If the story promotes a background entry into spine-critical status, say so in prose and suggest moving it into the PE (the user drives that).',
-        '4. "content" is what the AI reads at runtime - clean, self-contained lore prose, no meta commentary inside content. Split long entries into linked entries rather than one giant block.',
-        '5. "name" must be unique in the document. "order" defaults to 100 (lower = inserted earlier); leave it unless the user wants priority control.',
-        '6. Keep the document a single valid JSON array at all times. Append new entries inside the array; edit an entry with a surgical find/replace on its text. Never break JSON validity.',
-        '7. When the document is empty, initialize it with an append edit whose replace value is a JSON array (start with [] or with the first entries).',
-    ].join('\n');
+        '1. ONE TOPIC PER ENTRY. One general, one city, one artifact - never bundle. So "King Britannia has 5 generals" = 1 short entry for the king (or the command structure) PLUS 1 entry per general, each with its own name, keys, order, position - not one lumped entry, and not five identical blind ones. Differentiate them (each general\'s keys, domain, allegiance).',
+        '2. Default green + strong keys. Blue only for true spine (rare). Chain never alone.',
+        '3. If a [REFERENCE DOCUMENT] with the PE is present, it is canon: match names, facts, tone, timeline; do not duplicate spine the PE already holds; the worldbook is lore BEYOND the PE. If a background entry becomes spine-critical, say so and suggest moving it into the PE.',
+        '4. "content" is what the AI reads at runtime: clean self-contained lore prose, no meta commentary inside it. Split long topics into linked entries.',
+        '5. "name" unique in the document.',
+        '6. Keep the document a single valid JSON array at all times: append new entries inside the array, edit one with a surgical find/replace on its text, never break JSON validity.',
+        '7. Empty document -> initialize with an append edit whose replace value is a JSON array (start [] or with the first entries).',
+        '8. Briefly note in prose WHY you chose non-obvious settings (e.g. "put the active siege at_depth so it stays salient; gave all five generals order 200 so they rank together").',
+    ].join('\n')
 
     const DEFAULT_PRESET_PROMPTS = {
         [PRESET_PE_ID]: 'You are a world-lore architect who edits the document with surgical docedits. (Placeholder — open this preset\'s Edit button and paste the full Plot Essential Maker instructions.)',
@@ -1559,7 +1587,8 @@
         if (!p.entries.length) return '(no entries yet)';
         const icon = { blue: '\uD83D\uDD35', green: '\uD83D\uDFE2', chain: '\uD83D\uDD17' };
         return p.entries.map((e, i) => {
-            const head = (icon[e.strategy] || '\u2022') + ' ' + (e.name || '(unnamed)') + '  [' + e.strategy + ']';
+            const posLabel = { before_char: '\u2191before-char', after_char: '\u2193after-char', at_depth: '@depth ' + e.depth };
+            const head = (icon[e.strategy] || '\u2022') + ' ' + (e.name || '(unnamed)') + '  [' + e.strategy + ' \u00B7 ' + (posLabel[e.position] || e.position) + ' \u00B7 order ' + e.order + (e.probability !== 100 ? ' \u00B7 ' + e.probability + '%' : '') + ']';
             const keys = e.keys.length ? '\n   keys: ' + e.keys.join(', ') : (e.strategy === 'green' ? '\n   keys: (none \u2014 will not fire!)' : '');
             const body = e.content ? '\n   ' + e.content.replace(/\n/g, '\n   ') : '\n   (empty content)';
             return (i + 1) + '. ' + head + keys + body;
@@ -2418,6 +2447,28 @@
     // to SillyTavern World Info JSON for one-click import.
     // ------------------------------------------------------------------
 
+    // Map friendly position strings (and ST's numeric codes) to a canonical
+    // token. ST position codes: 0 before-char, 1 after-char, 2 top-AN,
+    // 3 bottom-AN, 4 at-depth. We support the three that make sense for lore.
+    function normalizePosition(p) {
+        if (typeof p === 'number') {
+            if (p === 0) return 'before_char';
+            if (p === 4) return 'at_depth';
+            return 'after_char';
+        }
+        const v = String(p || '').toLowerCase().replace(/^@/, '').replace(/[\s-]+/g, '_');
+        if (v === 'before_char' || v === 'before' || v === 'before_char_defs' || v === 'wibefore') return 'before_char';
+        if (v === 'at_depth' || v === 'depth' || v === 'atdepth' || v === 'in_chat') return 'at_depth';
+        if (v === 'after_char' || v === 'after' || v === 'after_char_defs' || v === 'wiafter' || v === '') return 'after_char';
+        return 'after_char';
+    }
+
+    function positionToST(pos) {
+        if (pos === 'before_char') return 0;
+        if (pos === 'at_depth') return 4;
+        return 1; // after_char
+    }
+
     // Parse a worldbook document (a JSON array of entry objects). Tolerant of
     // a top-level array or an object with an `entries` array. Returns
     // {entries:[...], error?:string}. Never throws.
@@ -2456,6 +2507,9 @@
                 content: String(e.content ?? '').trim(),
                 strategy: strat,
                 order: Number.isFinite(e.order) ? e.order : 100,
+                position: normalizePosition(e.position),
+                depth: Number.isFinite(e.depth) ? Math.max(0, Math.round(e.depth)) : 4,
+                probability: Number.isFinite(e.probability) ? Math.max(0, Math.min(100, e.probability)) : 100,
                 comment: String(e.comment ?? '').trim(),
             });
         }
@@ -2489,6 +2543,8 @@
             const blue = e.strategy === 'blue';
             const chain = e.strategy === 'chain';
             const keys = (blue || chain) ? [] : e.keys.slice();
+            const pos = positionToST(e.position);
+            const prob = Number.isFinite(e.probability) ? e.probability : 100;
             out.entries[String(i)] = {
                 uid: i,
                 key: keys,
@@ -2501,14 +2557,14 @@
                 selectiveLogic: 0,
                 addMemo: true,
                 order: Number.isFinite(e.order) ? e.order : 100,
-                position: 0,                           // before char defs (0); ST default-safe
+                position: pos,                         // 0 before-char, 1 after-char, 4 at-depth
                 disable: false,
                 excludeRecursion: false,
                 preventRecursion: false,
                 delayUntilRecursion: false,
-                probability: 100,
-                useProbability: true,
-                depth: 4,
+                probability: prob,
+                useProbability: prob !== 100,
+                depth: pos === 4 ? (Number.isFinite(e.depth) ? e.depth : 4) : 4,
                 group: '',
                 groupOverride: false,
                 groupWeight: 100,
@@ -2562,6 +2618,7 @@
             VERSION, findBlock, parseDocEdits, stripBlocks, splitThinking,
             normChars, levenshtein, locate, applyEditToText, grow, mimeForName, resolveDocByName,
             ensureDocShape, sess, parseWorldbook, lintWorldbook, worldbookToST, docLooksLikeWorldbook,
+            normalizePosition, positionToST,
         };
     } catch (e) { /* ignore */ }
 })();

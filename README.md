@@ -78,6 +78,10 @@ Lore Agent can build a **SillyTavern worldbook** — the large encyclopedia of w
 
 **Create one:** press **+WB** in the management bar (the ⋮ fold-out). You get a JSON document assigned to the **Worldbook Maker** preset. Attach your Plot Essential via 🔗 so every entry stays consistent with the spine and doesn't duplicate it, then ask the agent to add entries ("add dossiers for the Year-3 students", "add the Sunforge duelling hall"). Entries accumulate as a JSON array; **View** renders them as readable cards (🔵/🟢/🔗 · name · keys · content), and *Edit raw JSON* drops to the underlying text.
 
+**The agent owns every field.** You never hand-tune worldbooks — the Worldbook Maker chooses each setting from what the entry *is*, and explains non-obvious choices. Ask "King Britannia has 5 generals" and you get 6 differentiated entries (the king framed `before_char` at a higher order, the five generals each with their own keys/domain at a shared order so they rank together), not six identical blind ones.
+
+Per entry it sets: **strategy** (🔵/🟢/🔗), **keys**, **order** (insertion priority — spine high, dossiers ~100–150, flavour low; a set like the five generals shares one order), **position** (`before_char` for world/setting lore that frames everything, `after_char` for who/what is on stage — the default, `at_depth` for live must-be-noticed-now lore like an active siege), **depth** (for `at_depth`), and **probability** (100 for facts, lower for intermittent flavour). Anything it has no reason to change falls back to safe defaults.
+
 **Entry strategies** map to how ST activates each entry:
 
 - 🔵 **blue** (constant) — always in context. Reserve for a tiny amount of spine lore that must never be absent; most spine lives in the PE, so blue is rare.
@@ -138,13 +142,15 @@ The gear drawer always targets the *active document's* preset: live-editable tex
 
 ## Development
 
-`node --check index.js` plus `node test.js` (loads the extension under a stub `SillyTavern` global — proving a clean load and that the 3s init fallback can't crash — then runs 78 unit tests on the parsing/locating/applying engine).
+`node --check index.js` plus `node test.js` (loads the extension under a stub `SillyTavern` global — proving a clean load and that the 3s init fallback can't crash — then runs 91 unit tests on the parsing/locating/applying engine).
 
 ## License
 
 MIT.
 
 ## Changelog
+
+- **0.9.0** — the Worldbook Maker now sets **every** SillyTavern field per entry with real reasoning, not blind constants: order (importance; sets share an order), position (before_char / after_char / at_depth), depth, and probability, on top of strategy and keys. The prompt teaches when each value is correct ("King Britannia has 5 generals" → 6 differentiated, set-aware entries). Exporter maps friendly position strings to ST codes and round-trips them; preview cards show position/order/depth. 13 new tests (91 total) + the 5-generals scenario verified end-to-end.
 
 - **0.8.0** — worldbooks: a **Worldbook Maker** preset (full working prompt), **+WB** quick-create, readable entry cards in View, and **🌐→ST export** to SillyTavern's World Info JSON (blue→constant, green→keyed + vector-eligible, chain→vectorized) with lint warnings and clean round-trip re-import. Parser now also reads ST's `{entries:{…}}` object-map form (fixes re-importing an ST worldbook). README documents the PE-spine / worldbook-encyclopedia model and the vector-tuning advice.
 
