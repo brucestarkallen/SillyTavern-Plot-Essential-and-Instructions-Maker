@@ -56,7 +56,7 @@ Every request sends the agent: its preset prompt + the docedits protocol (append
 </docedits>
 ```
 
-The block becomes diff cards (red = find/anchor, green = replacement) with **Apply / Skip / Apply all / Dismiss** and a Hide/Show collapse. Applying tries, in order:
+The block becomes diff cards (red = find/anchor, green = replacement) with **Apply / Skip / Apply all / Dismiss** and a Hide/Show collapse. Proposals are a **stable staging area**, not a transient popup: you can reply to discuss them and the cards stay put. A chat-only answer (no edits) leaves your staged cards untouched; a refined proposal is **stacked below** the earlier one under a ▼ divider so you can compare and Apply whichever you prefer (**Apply newest** appears when more than one batch is pending). Only swiping the *same* reply (‹ ›) replaces that reply's cards, since a swipe is an alternate version of one answer rather than a new idea. Applying tries, in order:
 
 1. exact substring match (ambiguous matches are applied at the first occurrence and flagged "1 of N");
 2. length-preserving normalization (curly quotes → straight, en/em dashes → `-`, NBSP → space);
@@ -112,13 +112,15 @@ The gear drawer always targets the *active document's* preset: live-editable tex
 
 ## Development
 
-`node --check index.js` plus `node test.js` (loads the extension under a stub `SillyTavern` global — proving a clean load and that the 3s init fallback can't crash — then runs 39 unit tests on the parsing/locating/applying engine).
+`node --check index.js` plus `node test.js` (loads the extension under a stub `SillyTavern` global — proving a clean load and that the 3s init fallback can't crash — then runs 45 unit tests on the parsing/locating/applying engine).
 
 ## License
 
 MIT.
 
 ## Changelog
+
+- **0.7.0** — proposals are now a persistent staging area you can discuss around. Replying to talk no longer wipes pending cards (previously a chat-only answer cleared them); a refined proposal stacks below the earlier one under a divider for side-by-side comparison, with an **Apply newest** button when multiple batches are pending. Swiping the same reply still replaces its cards. The agent is told refinements stack, so "maybe it's better this way" yields one comparison card, not a re-dump.
 
 - **0.6.0** — compact top bar: only the document + session dropdowns stay visible; preset, references, and all document/session buttons fold behind a ⋮ toggle (state remembered), giving the chat log back ~5 rows on phones. Chat log now keeps a minimum height; fixed a garbled Imp tooltip.
 

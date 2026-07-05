@@ -119,6 +119,49 @@ setTimeout(() => {
     ok(D.resolveDocByName(pool, 'engine') === null, 'resolver: ambiguous partial -> null');
     ok(D.resolveDocByName(pool, 'missing') === null, 'resolver: unknown -> null');
 
+    // v0.7.0: proposal accumulation (discuss-then-refine must not drop cards)
+    console.log('== proposal accumulation ==');
+    function simFreshReply(pending, newEdits, seq) {
+        // mirrors the non-swipe branch of runGeneration
+        if (newEdits.length) {
+            seq.n++;
+            for (const e of newEdits) e.batch = seq.n;
+            pending = pending.concat(newEdits);
+        }
+        return pending;
+    }
+    const seq = { n: 0 };
+    let pend = [];
+    pend = simFreshReply(pend, [{ id: 'a', status: 'pending' }, { id: 'b', status: 'pending' }], seq);
+    ok(pend.length === 2 && pend.every(e => e.batch === 1), 'first reply stages batch 1');
+    // user discusses -> chat-only reply (no edits): cards must survive
+    pend = simFreshReply(pend, [], seq);
+    ok(pend.filter(e => e.status === 'pending').length === 2, 'chat-only reply keeps pending cards (THE BUG)');
+    // refinement arrives -> stacks as batch 2
+    pend = simFreshReply(pend, [{ id: 'c', status: 'pending' }], seq);
+    ok(pend.length === 3 && pend.filter(e => e.batch === 2).length === 1, 'refinement stacks as batch 2, originals intact');
+    const batches = [...new Set(pend.filter(e => e.status === 'pending').map(e => e.batch))];
+    ok(batches.length === 2, 'two batches pending simultaneously for comparison', batches);
+    // applying the newest batch only
+    const mb = Math.max(...pend.map(e => e.batch));
+    const newestOnly = pend.filter(e => e.batch === mb);
+    ok(newestOnly.length === 1 && newestOnly[0].id === 'c', 'apply-newest selects only batch 2');
+
+    // swipe replaces that reply's batch instead of stacking
+    console.log('== swipe replaces, not stacks ==');
+    function simSwipe(pending, idx, newEdits, seq) {
+        pending = pending.filter(e => e.status !== 'pending' || e.fromSwipe !== idx);
+        if (newEdits.length) {
+            seq.n++;
+            for (const e of newEdits) { e.batch = seq.n; e.fromSwipe = idx; }
+            pending = pending.concat(newEdits);
+        }
+        return pending;
+    }
+    let sp = [{ id: 'x', status: 'pending', fromSwipe: 5, batch: 1 }];
+    sp = simSwipe(sp, 5, [{ id: 'y', status: 'pending' }], seq);
+    ok(sp.length === 1 && sp[0].id === 'y', 'swiping the same reply replaces its cards');
+
     // v0.4.0: legacy flat-history docs must migrate into sessions losslessly
     console.log('== session migration ==');
     const legacy = { id: 'd1', name: 'Old Doc', text: 'body', history: [

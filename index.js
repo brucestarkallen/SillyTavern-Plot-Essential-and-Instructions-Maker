@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.6.0';
+    const VERSION = '0.7.0';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -67,6 +67,7 @@
         '5. At most ONE docedits block per reply, placed at the very END of the reply, after a brief prose explanation of what you changed and why. If nothing needs changing, output no block at all.',
         '6. In prose, refer to the mechanism as the "docedits block" in plain words. The literal angle-bracket tag must appear ONLY around the actual JSON block, never inside explanations.',
         '7. If the document is empty, draft it with "append" edits (one per section works well).',
+        '9. The user may want to discuss before applying. If they reply to talk it over rather than accept, answer in prose with NO block. If they then ask you to reconsider or adjust a proposal, output the improved version in a new block \u2014 it is staged alongside the earlier proposal so they can compare and pick; do not resend proposals that have not changed.',
         '8. Read-only context may appear as [REFERENCE DOCUMENT: name] blocks. By default every edit applies to the main [DOCUMENT]. To edit a reference document instead, add "doc": "its exact name" to that edit object \u2014 and whenever any reference documents are present, include "doc" on EVERY edit so the target is never ambiguous. Copy "find"/"insert_after" character-for-character from the document you are targeting.',
     ].join('\n');
 
@@ -88,7 +89,8 @@
     };
 
     let settings = null;
-    let pendingEdits = [];   // [{type, find, replace, reason, status}]
+    let pendingEdits = [];   // [{type, find, replace, reason, docName, status, batch}]
+    let editBatchSeq = 0;    // increments per accepted proposal block this session-view
     let editsCollapsed = false;
     let running = false;
     let inited = false;
@@ -927,8 +929,29 @@
             if (parsed.error) {
                 addBubble('note', 'docedits error: ' + parsed.error + ' \u2014 ask the agent to resend valid JSON.');
             }
-            pendingEdits = parsed.edits; // always mirror the visible reply (clears stale cards)
-            if (parsed.edits.length) editsCollapsed = false;
+            if (Number.isInteger(opts.swipeIdx)) {
+                // A swipe is an ALTERNATE version of one reply, not a new idea:
+                // replace that reply's cards (drop its old batch, stage the new).
+                pendingEdits = pendingEdits.filter(e => e.status !== 'pending' || e.fromSwipe !== opts.swipeIdx);
+                if (parsed.edits.length) {
+                    editBatchSeq++;
+                    for (const e of parsed.edits) { e.batch = editBatchSeq; e.fromSwipe = opts.swipeIdx; }
+                    pendingEdits = pendingEdits.concat(parsed.edits);
+                    editsCollapsed = false;
+                }
+            } else if (parsed.edits.length) {
+                // A fresh reply: STACK its proposals below anything still pending,
+                // so you can discuss, get a refinement, and compare both.
+                const stillPending = pendingEdits.filter(e => e.status === 'pending').length;
+                editBatchSeq++;
+                for (const e of parsed.edits) e.batch = editBatchSeq;
+                pendingEdits = pendingEdits.concat(parsed.edits);
+                editsCollapsed = false;
+                if (stillPending) {
+                    addBubble('note', '\u2795 ' + parsed.edits.length + ' new proposal(s) staged below your ' + stillPending + ' still-pending one(s) \u2014 compare and Apply the ones you want.');
+                }
+            }
+            // A chat-only reply (no edits) leaves staged cards untouched.
             renderEditCards();
         } catch (err) {
             busy.remove();
@@ -960,8 +983,13 @@
             persist();
             renderHistory();
             const pe = parseDocEdits(entry.content);
-            editsCollapsed = false;
-            pendingEdits = pe.edits;
+            pendingEdits = pendingEdits.filter(e => e.status !== 'pending' || e.fromSwipe !== idx);
+            if (pe.edits.length) {
+                editBatchSeq++;
+                for (const e of pe.edits) { e.batch = editBatchSeq; e.fromSwipe = idx; }
+                pendingEdits = pendingEdits.concat(pe.edits);
+                editsCollapsed = false;
+            }
             renderEditCards();
             return;
         }
@@ -2095,19 +2123,35 @@
         box.classList.add('la_open');
         const frag = document.createDocumentFragment();
 
-        const pendingCount = pendingEdits.filter(e => e.status === 'pending').length;
+        const pendingList = pendingEdits.filter(e => e.status === 'pending');
+        const pendingCount = pendingList.length;
+        const batches = [...new Set(pendingList.map(e => e.batch || 0))];
         const head = document.createElement('div');
         head.className = 'la_edits_head';
         head.innerHTML = '<span>Proposed edits: ' + pendingEdits.length + (pendingCount !== pendingEdits.length ? ' (' + pendingCount + ' pending)' : '') + '</span>' +
             '<button class="la_btn" id="la_toggleedits">' + (editsCollapsed ? 'Show' : 'Hide') + '</button>' +
+            (batches.length > 1 ? '<button class="la_btn" id="la_applynewest" title="Apply only the newest batch of proposals">Apply newest</button>' : '') +
             '<button class="la_btn la_primary" id="la_applyall">Apply all pending</button>' +
             '<button class="la_btn" id="la_dismissall">Dismiss</button>';
         frag.appendChild(head);
 
         const list = document.createElement('div');
         if (editsCollapsed) list.style.display = 'none';
+        const frag_list_append = (node) => list.appendChild(node);
 
+        const maxBatch = Math.max(0, ...pendingEdits.map(e => e.batch || 0));
+        let lastBatch = null;
         pendingEdits.forEach((edit, idx) => {
+            const bt = edit.batch || 0;
+            if (bt !== lastBatch && maxBatch > 0) {
+                const div = document.createElement('div');
+                div.className = 'la_batchsep';
+                div.textContent = bt === maxBatch
+                    ? '\u25BC newest proposals' + (lastBatch !== null ? ' (compare with above)' : '')
+                    : '\u25B2 earlier proposals';
+                frag_list_append(div);
+                lastBatch = bt;
+            }
             const card = document.createElement('div');
             card.className = 'la_card';
             const findShown = edit.type === 'append'
@@ -2132,6 +2176,10 @@
         box.appendChild(frag);
 
         el('la_applyall')?.addEventListener('click', () => applyEdits(pendingEdits));
+        el('la_applynewest')?.addEventListener('click', () => {
+            const mb = Math.max(0, ...pendingEdits.map(e => e.batch || 0));
+            applyEdits(pendingEdits.filter(e => (e.batch || 0) === mb));
+        });
         el('la_dismissall')?.addEventListener('click', () => {
             pendingEdits = [];
             renderEditCards();
