@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.2';
+    const VERSION = '0.11.3';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -3321,6 +3321,7 @@
             ensureDocShape, sess, parseWorldbook, lintWorldbook, worldbookToST, docLooksLikeWorldbook,
             normalizePosition, positionToST,
             numOr, estTokens, worldbookTokenStats, serializeWorldbook, pickContextWindow, contextTokenBreakdown,
+            getSettings: () => settings,
         };
     } catch (e) { /* ignore */ }
 })();
