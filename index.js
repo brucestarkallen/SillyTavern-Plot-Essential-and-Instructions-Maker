@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.10.2';
+    const VERSION = '0.10.3';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the

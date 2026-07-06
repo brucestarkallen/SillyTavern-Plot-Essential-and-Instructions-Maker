@@ -150,6 +150,8 @@ MIT.
 
 ## Changelog
 
+- **0.10.3** — fix fullscreen collapsing to content height (composer floated mid-screen with ST showing through below). The fullscreen panel now has an explicit height = 100dvh minus the top offset, so it spans from just below the ST toolbar to the screen bottom.
+
 - **0.10.2** — fullscreen now starts below the SillyTavern toolbar (concrete 56px offset, since Android WebView often reports safe-area insets as 0) so the panel header and its exit/close buttons are always fully visible and reachable.
 
 - **0.10.1** — fix: in fullscreen the header (with the exit ⛶ and ✕ buttons) could hide under the phone status bar / ST toolbar. The header is now sticky with safe-area padding and larger tap targets, and **Esc exits fullscreen** as a fallback.
