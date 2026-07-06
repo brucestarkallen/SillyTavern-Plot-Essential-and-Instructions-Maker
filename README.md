@@ -150,6 +150,8 @@ MIT.
 
 ## Changelog
 
+- **0.10.1** — fix: in fullscreen the header (with the exit ⛶ and ✕ buttons) could hide under the phone status bar / ST toolbar. The header is now sticky with safe-area padding and larger tap targets, and **Esc exits fullscreen** as a fallback.
+
 - **0.10.0** — ⛶ fullscreen toggle in the panel header: expands the panel to fill the screen for heavy authoring, tap again for the default floating size. Remembered across sessions.
 
 - **0.9.0** — the Worldbook Maker now sets **every** SillyTavern field per entry with real reasoning, not blind constants: order (importance; sets share an order), position (before_char / after_char / at_depth), depth, and probability, on top of strategy and keys. The prompt teaches when each value is correct ("King Britannia has 5 generals" → 6 differentiated, set-aware entries). Exporter maps friendly position strings to ST codes and round-trips them; preview cards show position/order/depth. 13 new tests (91 total) + the 5-generals scenario verified end-to-end.

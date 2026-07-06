@@ -390,5 +390,21 @@
     max-height: 100dvh !important;
     border-radius: 0;
     resize: none;
+    /* keep the header clear of the phone status bar / notch / ST toolbar */
+    padding-top: env(safe-area-inset-top, 0px);
+    box-sizing: border-box;
 }
-#la_panel.la_full #la_header { cursor: default; }
+#la_panel.la_full #la_header {
+    cursor: default;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    /* extra breathing room so the ⛶ / ✕ sit below any overlapping system UI */
+    padding-top: 14px;
+    background: var(--SmartThemeBlurTintColor, rgba(22, 22, 26, 0.98));
+}
+#la_panel.la_full #la_header .la_hbtn {
+    /* bigger tap targets for the exit/close controls in fullscreen */
+    padding: 8px 12px;
+    font-size: 1.05em;
+}

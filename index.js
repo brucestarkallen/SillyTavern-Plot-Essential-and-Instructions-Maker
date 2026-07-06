@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.10.0';
+    const VERSION = '0.10.1';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -1812,6 +1812,13 @@
             settings.fullscreen = !settings.fullscreen;
             applyFullscreen();
             persist();
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && settings.fullscreen && el('la_panel')?.classList.contains('la_open')) {
+                settings.fullscreen = false;
+                applyFullscreen();
+                persist();
+            }
         });
         el('la_close').addEventListener('click', () => togglePanel(false));
         el('la_gear').addEventListener('click', () => {
