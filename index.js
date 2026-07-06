@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.0';
+    const VERSION = '0.11.1';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -3185,6 +3185,11 @@
         }
         body.appendChild(chips);
 
+        const explain = document.createElement('div');
+        explain.style.cssText = 'font-size:0.74em;opacity:0.6;margin:-2px 0 10px;line-height:1.45;';
+        explain.textContent = 'This is a read-only view for you \u2014 it does NOT feed anything to the agent. To let the agent read a document while it works, tap \uD83D\uDD17 on its pane below (or the \uD83D\uDD17 button in the panel).';
+        body.appendChild(explain);
+
         const selected = liveSel();
         if (selected.length < 2) {
             const note = document.createElement('div');
@@ -3195,6 +3200,7 @@
         }
 
         const docs = selected.map(id => settings.docs.find(d => d.id === id)).filter(Boolean);
+        const active = activeDoc();
         const stacked = settings.compareLayout === 'stacked';
         const area = document.createElement('div');
         area.style.cssText = stacked
@@ -3213,12 +3219,47 @@
             const pmeta = document.createElement('span');
             pmeta.style.cssText = 'flex:0 0 auto;opacity:0.6;font-size:0.85em;font-weight:400;';
             pmeta.textContent = (d.text || '').length.toLocaleString() + ' ch';
+            ph.appendChild(pname);
+            ph.appendChild(pmeta);
+
+            // Bridge to the agent: attach this doc as a reference of the active doc.
+            if (active && d.id === active.id) {
+                const badge = document.createElement('span');
+                badge.textContent = '\u270E active';
+                badge.title = 'This is the document the agent is editing';
+                badge.style.cssText = 'flex:0 0 auto;font-size:0.7em;opacity:0.5;';
+                ph.appendChild(badge);
+            } else if (active) {
+                const isRef = Array.isArray(active.refs) && active.refs.includes(d.id);
+                const attB = document.createElement('button');
+                attB.textContent = isRef ? '\uD83D\uDD17 attached' : '\uD83D\uDD17 attach';
+                attB.title = isRef
+                    ? 'The agent can read this (reference of "' + active.name + '"). Tap to detach.'
+                    : 'Let the agent read this while working on "' + active.name + '"';
+                attB.style.cssText = 'cursor:pointer;border:1px solid rgba(255,255,255,0.3);background:' + (isRef ? 'rgba(80,160,240,0.32)' : 'rgba(255,255,255,0.08)') + ';color:inherit;border-radius:5px;padding:3px 8px;font-size:0.72em;flex:0 0 auto;white-space:nowrap;';
+                attB.addEventListener('click', () => {
+                    if (!Array.isArray(active.refs)) active.refs = [];
+                    const nowOn = !active.refs.includes(d.id);
+                    if (nowOn) active.refs.push(d.id);
+                    else active.refs = active.refs.filter(x => x !== d.id);
+                    persist();
+                    updateRefCount();
+                    updateSub();
+                    const rb = el('la_refbar');
+                    if (rb && rb.style.display !== 'none') renderRefBar();
+                    renderCompareBody(win);
+                    toast(nowOn ? 'Attached "' + d.name + '" \u2014 the agent can now read it while working on "' + active.name + '".' : 'Detached "' + d.name + '".', 'success');
+                });
+                ph.appendChild(attB);
+            }
+
             const copyB = document.createElement('button');
             copyB.textContent = '\uD83D\uDCCB';
             copyB.title = 'Copy this document';
             copyB.style.cssText = 'cursor:pointer;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.08);color:inherit;border-radius:5px;padding:3px 7px;font-size:0.9em;flex:0 0 auto;';
             copyB.addEventListener('click', async () => { const ok = await copyText(d.text || ''); toast(ok ? 'Copied "' + d.name + '".' : 'Copy failed.', ok ? 'success' : 'error'); });
-            ph.appendChild(pname); ph.appendChild(pmeta); ph.appendChild(copyB);
+            ph.appendChild(copyB);
+
             const pbody = document.createElement('div');
             pbody.style.cssText = 'flex:1 1 auto;overflow-y:auto;padding:9px 10px;white-space:pre-wrap;word-break:break-word;font-family:monospace;font-size:0.8em;line-height:1.45;';
             pbody.textContent = d.text || '(empty)';

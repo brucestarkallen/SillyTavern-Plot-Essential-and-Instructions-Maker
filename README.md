@@ -150,6 +150,8 @@ MIT.
 
 ## Changelog
 
+- **0.11.1** — compare view now bridges to the agent. Compare (⚖) is a read-only viewer for *you* — it never fed anything to the agent, which surprised people who selected documents there expecting the agent to gain access. Each pane now has a **🔗 attach** toggle that attaches/detaches that document as a reference of the active doc (the active doc's own pane shows an "active" badge instead), and a permanent note spells out that Compare is view-only and that 🔗 is how you let the agent read a document. Attaching from Compare updates the panel's 🔗 count and reference bar live.
+
 - **0.11.0** — worldbook workbench + document compare.
   - **Bugfix (silent data loss):** numeric worldbook fields emitted as JSON strings (`"order":"300"`, `"depth":"2"`, `"probability":"40"`) were being reset to defaults on load because the guard used `Number.isFinite` on the raw string. They are now coerced and preserved. If a model ever wrote quoted numbers, your per-entry tuning was quietly reverting — this stops that.
   - **Per-entry worldbook editing:** View on a worldbook now opens a manager with a card per entry. Edit any entry in a real form (name, strategy, keys, position, order, probability, depth, content, comment) — no hand-editing JSON. Add entries, delete entries, or pull one in from another document. Raw-JSON editing is still one tap away.
