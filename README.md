@@ -150,6 +150,8 @@ MIT.
 
 ## Changelog
 
+- **0.10.2** — fullscreen now starts below the SillyTavern toolbar (concrete 56px offset, since Android WebView often reports safe-area insets as 0) so the panel header and its exit/close buttons are always fully visible and reachable.
+
 - **0.10.1** — fix: in fullscreen the header (with the exit ⛶ and ✕ buttons) could hide under the phone status bar / ST toolbar. The header is now sticky with safe-area padding and larger tap targets, and **Esc exits fullscreen** as a fallback.
 
 - **0.10.0** — ⛶ fullscreen toggle in the panel header: expands the panel to fill the screen for heavy authoring, tap again for the default floating size. Remembered across sessions.
