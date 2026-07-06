@@ -1,12 +1,12 @@
 {
-    "display_name": "Lore Agent",
+    "display_name": "Plot Essential and Instructions Maker",
     "loading_order": 100,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
     "author": "brucestarkallen",
-    "version": "0.11.3",
-    "homePage": "https://github.com/brucestarkallen/St-agent-maker-",
+    "version": "0.11.4",
+    "homePage": "https://github.com/brucestarkallen/SillyTavern-Plot-Essential-and-Instructions-Maker",
     "auto_update": false
 }

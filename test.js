@@ -1,4 +1,4 @@
-// Load + engine tests for Lore Agent. Run: node test.js
+// Load + engine tests for Plot Essential and Instructions Maker (module id: loreAgent). Run: node test.js
 global.SillyTavern = { getContext() { return {}; } };
 require('./index.js');
 const D = globalThis.__loreAgentDebug;

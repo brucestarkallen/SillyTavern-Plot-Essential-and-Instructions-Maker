@@ -1,4 +1,6 @@
-# Lore Agent (SillyTavern extension)
+# Plot Essential and Instructions Maker (SillyTavern extension)
+
+> A floating AI editor for the two kinds of authored text a SillyTavern story runs on: **Plot Essential** documents (canon / world / character rules) and **AI instruction sets** (system prompts, engine files). You chat with an agent; it edits the document for you — surgically, reviewably, undoably.
 
 A floating chat panel where you talk to an AI agent about a markdown/text document, and the agent **edits the document directly** — surgical find/replace, insertions after an anchor, appends — shown as red/green diff cards you approve, with one-click Undo. Like a code-editing agent, but for lore and prompt documents.
 
@@ -7,9 +9,13 @@ Built for two document-authoring jobs (same editing engine, different agent brai
 1. **Plot Essential (PE) documents** — world rules, magic systems, character dossiers, timelines, authored *before* a story exists.
 2. **AI instruction sets** — system prompts, engine files, planner briefs.
 
+It also has a first-class **worldbook** mode (a visual editor for SillyTavern World Info / lorebooks that exports straight to ST's schema), multi-document **references** the agent reads in full, a side-by-side **Compare** view, per-document conversation **sessions** for branching, and a live **context meter** in the header showing how many tokens your next message will send.
+
 Documents are **global and chat-independent**: they live in extension settings, need no character or chat loaded, and survive across everything. The extension never touches the chat, chat metadata, or chat events.
 
-Sibling of Continuity Copilot — same engineering patterns, same author.
+**What it is / isn't.** This is an original, from-scratch extension — *not* a fork of another project. The difference from vanilla SillyTavern: instead of hand-editing lorebooks and prompt files in raw text fields, you get a conversational agent that makes surgical, reviewable, undoable edits; treats your PE / instruction / worldbook files as first-class versioned documents (with references, compare, sessions, undo, and a token meter); and exports worldbooks directly to ST's World Info format. Sibling of Continuity Copilot — same engineering patterns, same author.
+
+**For AI assistants / future maintainers.** Read `AGENTS.md` before changing anything. The user-facing name ("Plot Essential and Instructions Maker") is **not** the internal id: internally the module is **`loreAgent`** — the `extensionSettings` storage key, the console `[LoreAgent]` prefix, and the `globalThis.__loreAgentDebug` export. **Never rename the internal id** — it is the key every saved document and preset lives under, and renaming it orphans all real user data. The rename to the current display name touched display strings only.
 
 ## Install
 
@@ -18,14 +24,14 @@ Option A — extension installer (recommended):
 2. SillyTavern → Extensions (stacked blocks icon) → **Install extension** → paste the repo URL.
 
 Option B — manual:
-1. Copy the `lore-agent` folder into `SillyTavern/data/<your-user>/extensions/` (or `public/scripts/extensions/third-party/` on older layouts).
+1. Copy this extension's folder into `SillyTavern/data/<your-user>/extensions/` (or `public/scripts/extensions/third-party/` on older layouts).
 2. Restart SillyTavern / reload the page.
 
 **After every update: hard-refresh or clear cached images.** Mobile browsers cache extension files aggressively; the version stamp in the panel header (and in the editor window title, and in the console `[LoreAgent] ready v…` line) is the only proof of which code is actually running. If the header version doesn't match the manifest you installed, you are running a cached copy.
 
 ## Setup
 
-1. Wand menu (Extensions menu next to the chat input) → **Lore Agent**. Or type `/lore`.
+1. Wand menu (Extensions menu next to the chat input) → **Plot Essential and Instructions Maker**. Or type `/lore`.
 2. Gear icon → pick a **Connection Profile** (recommended; streaming needs one). "Current API" raw generation works as a fallback but cannot stream.
 3. Press **+ New** (or **Imp** to paste an existing file), and talk.
 
@@ -74,7 +80,7 @@ Before each applied batch the whole document is backed up onto that document's *
 
 ## Worldbooks (the lore beyond the Plot Essential)
 
-Lore Agent can build a **SillyTavern worldbook** — the large encyclopedia of world lore that lives *outside* the Plot Essential. The PE is your always-loaded spine; the worldbook is everything that should load only when relevant (NPCs the story hasn't reached, locations, factions, history, items), so it never bloats your token budget.
+This extension can build a **SillyTavern worldbook** — the large encyclopedia of world lore that lives *outside* the Plot Essential. The PE is your always-loaded spine; the worldbook is everything that should load only when relevant (NPCs the story hasn't reached, locations, factions, history, items), so it never bloats your token budget.
 
 **Create one:** press **+WB** in the management bar (the ⋮ fold-out). You get a JSON document assigned to the **Worldbook Maker** preset. Attach your Plot Essential via 🔗 so every entry stays consistent with the spine and doesn't duplicate it, then ask the agent to add entries ("add dossiers for the Year-3 students", "add the Sunforge duelling hall"). Entries accumulate as a JSON array; **View** renders them as readable cards (🔵/🟢/🔗 · name · keys · content), and *Edit raw JSON* drops to the underlying text.
 
@@ -88,7 +94,7 @@ Per entry it sets: **strategy** (🔵/🟢/🔗), **keys**, **order** (insertion
 - 🟢 **green** (keyword) — fires when one of its keys appears in the conversation. **This is the default for almost every entry.** The agent gives each one a deliberate key list (name, aliases, epithets, words a scene would use).
 - 🔗 **chain** (semantic/vector) — fires on semantic relatedness *if you have vectors enabled*. Never used alone, because with vectors off it becomes invisible. Instead every green entry is also exported **vector-eligible**, so it fires on keywords *and* — when you have vectors on — semantically too. Keywords are the floor that always works; vectors are a bonus layer.
 
-**Export → SillyTavern:** the **🌐→ST** button (visible for worldbook docs) downloads a `.json` in ST's exact World Info schema. Import it via **SillyTavern → World Info → Import**. Mapping: blue→`constant`, green→keyed + selective + vector-eligible, chain→pure vectorized. The export also re-imports cleanly back into Lore Agent (full round-trip), and warns about entries with no keys, empty content, or duplicate names.
+**Export → SillyTavern:** the **🌐→ST** button (visible for worldbook docs) downloads a `.json` in ST's exact World Info schema. Import it via **SillyTavern → World Info → Import**. Mapping: blue→`constant`, green→keyed + selective + vector-eligible, chain→pure vectorized. The export also re-imports cleanly back into this extension (full round-trip), and warns about entries with no keys, empty content, or duplicate names.
 
 **PE ↔ Worldbook interaction:** the two are one world. Attach the PE while editing the worldbook (entries respect canon); attach the worldbook while editing the PE (promote a background entry into the spine when the story makes it constant). The 🔗 reference system carries the actual content both ways, and you can target either document per-edit with the agent's `"doc"` field.
 
@@ -149,6 +155,8 @@ The gear drawer always targets the *active document's* preset: live-editable tex
 MIT.
 
 ## Changelog
+
+- **0.11.4** — renamed to **Plot Essential and Instructions Maker** (display name, panel header, wand-menu entry, slash help, and the protocol line the agent sees). The header title and subtitle now stack vertically so the longer name and the live context meter both fit on mobile. Repo renamed to `SillyTavern-Plot-Essential-and-Instructions-Maker` (old links redirect). No functional changes — the internal module id stays `loreAgent`, so every saved document and preset carries over untouched. Expanded this README and `AGENTS.md` so a fresh AI can understand the extension without reading the whole codebase, including the note that the internal id must never be renamed. Slash command is still `/lore`.
 
 - **0.11.3** — deep audit pass, no behavior changes. Verified the whole surface end-to-end: 117 engine tests plus a new 61-check DOM integration harness (jsdom) that boots the extension and drives the real wired UI — worldbook manager CRUD, entry editor, validate & repair, from-doc import, promote across documents with cross-document undo, compare view, the compare→agent attach bridge, and the live context meter — asserting real state after each action. Edge cases confirmed safe: a dangling 🔗 reference (referenced doc deleted) is scrubbed and can't crash the context meter; compare caps at 4 documents; editing one worldbook entry leaves the others byte-identical; invalid worldbook JSON degrades to a readable message with a raw-JSON escape; the at-depth depth field shows/hides correctly. Added `__loreAgentDebug.getSettings()` — a read-only console hook returning the live settings (same object already reachable via SillyTavern's context; handy for inspecting your docs/presets from devtools).
 

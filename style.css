@@ -43,12 +43,19 @@
     flex: 0 0 auto;
 }
 
-#la_header .la_title { font-weight: 700; letter-spacing: 0.2px; flex: 0 0 auto; }
+#la_header .la_htext { display: flex; flex-direction: column; justify-content: center; min-width: 0; flex: 1 1 auto; gap: 1px; }
+
+#la_header .la_title {
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 #la_header .la_sub {
     opacity: 0.6;
     font-size: 0.8em;
-    flex: 1 1 auto;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

@@ -1,10 +1,14 @@
 # AGENTS.md — maintainer brief for AI-assisted development
 
-You (an AI model) are continuing development of **Lore Agent**, a SillyTavern third-party extension built iteratively with the repo owner, who tests on **SillyTavern under Termux/Android, accessed from a mobile browser**. Read this whole file before changing anything. Its sibling project (same author, same patterns) is Continuity Copilot.
+You (an AI model) are continuing development of **Plot Essential and Instructions Maker** (internal module id `loreAgent`; see the naming note below), a SillyTavern third-party extension built iteratively with the repo owner, who tests on **SillyTavern under Termux/Android, accessed from a mobile browser**. Read this whole file before changing anything. Its sibling project (same author, same patterns) is Continuity Copilot.
 
 ## What this extension is
 
 A floating chat panel where the user talks to an LLM about a plain-text/markdown document, and the LLM edits the document via a strict protocol — one `<docedits>` JSON block per reply (find/replace, insert_after, append, replace_all, optional `"doc"` to target an attached reference document). Edits render as red/green diff cards the user approves; applies are undoable. Documents, presets, sessions, and undo stacks all live in `SillyTavern.getContext().extensionSettings.loreAgent` — **never** in chat or chatMetadata; the extension must work with no character/chat loaded.
+
+## Internal naming — never change
+
+The display name is **Plot Essential and Instructions Maker** (`manifest.display_name`). The **internal module id is `loreAgent`**, load-bearing in three places: the `extensionSettings.loreAgent` storage key (every saved document + preset lives here), the console `LOG` prefix `[LoreAgent]`, and the `globalThis.__loreAgentDebug` test/console export. Do **not** rename any of these — changing the storage key orphans all real user data, and the test suite + jsdom audit harness bind to `__loreAgentDebug`. The `la_` element-id prefix, `PRESET_WB_ID` (`seed_worldbook_maker`), and internal function names are likewise historical and stay. A rename touches display strings only.
 
 ## Architecture map (index.js, one IIFE, no imports)
 
@@ -31,10 +35,13 @@ A worldbook is an ordinary document holding a JSON array of entry objects (`{nam
 UI: **+WB** creates one (`[]` + WB preset); **View** on a worldbook opens the **worldbook manager** (`showWorldbookManager` → `wbRenderList`/`wbRenderEntryForm`, a `floatWindow`): per-entry card list with a real edit form (no hand-editing JSON), token-budget header, **Validate & repair** (`repairWorldbook`), Add/Delete, **From doc** import (`wbSourcePicker`), **Move →** promote an entry into another document (`wbPromoteEntry`, undoable across both docs via `commitDocChanges`), and a raw-JSON escape (`viewDocRaw`); **🌐→ST** exports (`exportWorldbookST`). PE↔worldbook interaction is via the existing 🔗 reference system + per-edit `"doc"` targeting + the manager's Move/From-doc actions — no separate sync layer. Keep keywords as the deterministic floor; vectors are always an additive bonus, never a single point of failure.
 
 ### Compare view (v0.11.0)
-**⚖ Cmp** (`showCompare` → `renderCompareBody`, a `floatWindow`) shows 2–4 documents side by side, read-only, for cross-referencing drafts. Layout toggle: **columns** (horizontal scroll, 82vw panes for mobile swipe) vs **stacked** (vertical). Selection (`settings.compareIds`, capped at 4) and `settings.compareLayout` persist. Per-pane copy.
+**⚖ Cmp** (`showCompare` → `renderCompareBody`, a `floatWindow`) shows 2–4 documents side by side, read-only, for cross-referencing drafts. Layout toggle: **columns** (horizontal scroll, 82vw panes for mobile swipe) vs **stacked** (vertical). Selection (`settings.compareIds`, capped at 4) and `settings.compareLayout` persist. Per-pane copy. **Compare→agent bridge (v0.11.1):** each pane has a 🔗 attach toggle that adds/removes that doc as a reference of the *active* doc (the active doc's own pane shows an `active` badge and can't self-reference); Compare itself is view-only — only 🔗 references are actually sent to the agent, and attaching live-syncs the panel's 🔗 count + reference bar.
 
 ### Cross-document undo (v0.11.0)
 `commitDocChanges(changes, label)` applies text changes to N docs as one batch, pushed to the same `settings.batchLog` the main **Undo** walks — so a promote (append to target + remove from worldbook) reverts in a single Undo. Mirrors the commit tail of `applyEdits`.
+
+### Live context meter (v0.11.2)
+`contextTokenBreakdown(doc)` (pure, exported, test-covered) mirrors `buildMessages` exactly — system+protocol + document + 🔗 references (in full) + windowed history — and returns a per-component breakdown where `total = system + doc + refsTotal + history`. The header subtitle (`updateSub`, already called by `renderHistory` at generation end and every mutation) shows a live `~Nk ctx` readout via `kFmt`; tapping it pops a one-line breakdown toast with per-reference token counts. It is a ~chars/4 estimate of context *sent*, not the model's context-window limit. Related: `settings` now initializes to a valid default object at load (not `null`) so pre-init access and the node/jsdom harnesses can't NPE — `loadSettings` reassigns it to the ctx-backed object in production.
 
 ## Invariants — do not break these
 
@@ -51,6 +58,7 @@ UI: **+WB** creates one (`[]` + WB preset); **View** on a worldbook opens the **
 ## Iteration protocol
 
 - Before shipping: `node --check index.js` **and** `node test.js` (stubs `SillyTavern`, proves clean load including the 3s timer, runs the engine unit suite). Add tests for any new pure logic via the `globalThis.__loreAgentDebug` export.
+- Beyond the engine suite, a **jsdom UI harness** (owner keeps it out-of-repo) boots the extension with a stubbed `SillyTavern` and drives the real wired UI (worldbook CRUD, entry editor, promote + cross-doc undo, compare, attach bridge, context meter) via simulated clicks, asserting live state through `__loreAgentDebug.getSettings()` (a read-only settings getter). It catches runtime/DOM errors the pure tests can't reach, but cannot verify real mobile CSS layout, touch drag, real toastr rendering, or a live generation round-trip.
 - User reports bugs with screenshots; respond with **targeted patches, not rewrites**; update the README changelog every version.
 - Data migrations (doc/session shape changes) must be lossless and test-covered — the user has real long-running data in extensionSettings.
 - Owner's style: act and build immediately, terse communication, fix root causes, full automation with graceful degradation.

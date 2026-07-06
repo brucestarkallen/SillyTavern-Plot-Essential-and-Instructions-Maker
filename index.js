@@ -1,5 +1,7 @@
 /*
- * Lore Agent — a SillyTavern extension for AI-edited documents.
+ * Plot Essential and Instructions Maker — a SillyTavern extension for AI-edited documents.
+ * (Internal module id is 'loreAgent' — the extensionSettings storage key, the LOG prefix,
+ *  and the __loreAgentDebug export. NEVER rename it: all saved docs/presets live under it.)
  *
  * A floating chat panel where you talk to an agent about a markdown/text
  * document (world lore "Plot Essentials", AI instruction sets, anything),
@@ -15,9 +17,14 @@
 (() => {
     'use strict';
 
+    // Internal module id: the extensionSettings storage key, the console LOG prefix,
+    // and the globalThis.__loreAgentDebug global all use this. The user-facing name is
+    // "Plot Essential and Instructions Maker" (manifest.display_name). Do NOT change this
+    // internal id — it is the key every saved document and preset lives under; renaming
+    // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.3';
+    const VERSION = '0.11.4';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -101,7 +108,7 @@
     // ------------------------------------------------------------------
 
     const DOCEDITS_PROTOCOL = [
-        '=== DOCEDITS PROTOCOL (attached automatically by the Lore Agent extension — follow it exactly, never restate it) ===',
+        '=== DOCEDITS PROTOCOL (attached automatically by the Plot Essential and Instructions Maker extension — follow it exactly, never restate it) ===',
         'You are working on the text file shown in [DOCUMENT]. You change it ONLY by ending a reply with exactly one block in this exact format:',
         '',
         '<docedits>',
@@ -201,7 +208,7 @@
     function toast(msg, type) {
         try {
             if (typeof window !== 'undefined' && window.toastr) {
-                (window.toastr[type || 'info'] || window.toastr.info)(msg, 'Lore Agent');
+                (window.toastr[type || 'info'] || window.toastr.info)(msg, 'Plot Essential & Instructions Maker');
                 return;
             }
         } catch (e) { /* ignore */ }
@@ -1779,8 +1786,10 @@
         panel.id = 'la_panel';
         panel.innerHTML = [
             '<div id="la_header">',
-            '  <span class="la_title">\uD83D\uDCDC Lore Agent</span>',
-            '  <span class="la_sub" id="la_sub"></span>',
+            '  <div class="la_htext">',
+            '    <span class="la_title">\uD83D\uDCDC Plot Essential and Instructions Maker</span>',
+            '    <span class="la_sub" id="la_sub"></span>',
+            '  </div>',
             '  <span class="la_hbtn" id="la_full" title="Toggle fullscreen"><i class="fa-solid fa-expand"></i></span>',
             '  <span class="la_hbtn" id="la_gear" title="Settings"><i class="fa-solid fa-gear"></i></span>',
             '  <span class="la_hbtn" id="la_close" title="Close"><i class="fa-solid fa-xmark"></i></span>',
@@ -2445,8 +2454,8 @@
         const div = document.createElement('div');
         div.id = 'la_menu_item';
         div.className = 'list-group-item flex-container flexGap5 interactable';
-        div.title = 'Toggle Lore Agent';
-        div.innerHTML = '<i class="fa-solid fa-scroll"></i><span>Lore Agent</span>';
+        div.title = 'Toggle Plot Essential and Instructions Maker';
+        div.innerHTML = '<i class="fa-solid fa-scroll"></i><span>Plot Essential and Instructions Maker</span>';
         div.addEventListener('click', () => togglePanel());
         menu.appendChild(div);
     }
@@ -2461,7 +2470,7 @@
         };
         try {
             if (typeof c.registerSlashCommand === 'function') {
-                c.registerSlashCommand('lore', handler, [], '<span>\u2014 toggle Lore Agent / send it a request</span>', true, true);
+                c.registerSlashCommand('lore', handler, [], '<span>\u2014 toggle Plot Essential and Instructions Maker / send it a request</span>', true, true);
                 return;
             }
         } catch (e) { /* ignore */ }
@@ -2470,7 +2479,7 @@
                 c.SlashCommandParser.addCommandObject(c.SlashCommand.fromProps({
                     name: 'lore',
                     callback: handler,
-                    helpString: 'Toggle Lore Agent, or send it a request: /lore change the magic system to blood-cost casting',
+                    helpString: 'Toggle Plot Essential and Instructions Maker, or send it a request: /lore change the magic system to blood-cost casting',
                 }));
             }
         } catch (e) { console.warn(LOG, 'slash registration failed', e); }
