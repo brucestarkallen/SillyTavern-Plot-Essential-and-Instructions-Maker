@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.9.0';
+    const VERSION = '0.10.0';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -138,6 +138,7 @@
         showThinking: true,
         activeDocId: '',
         barOpen: false,   // management fold-out under the doc/session row
+        fullscreen: false,// panel fills the viewport
         batchLog: [],  // ids of applied batches, newest last (cross-doc undo)
         docs: [],      // [{id, name, text, updated, presetId, history, undo, refs}]
         presets: [],   // [{id, name, prompt}]
@@ -1748,6 +1749,7 @@
             '<div id="la_header">',
             '  <span class="la_title">\uD83D\uDCDC Lore Agent</span>',
             '  <span class="la_sub" id="la_sub"></span>',
+            '  <span class="la_hbtn" id="la_full" title="Toggle fullscreen"><i class="fa-solid fa-expand"></i></span>',
             '  <span class="la_hbtn" id="la_gear" title="Settings"><i class="fa-solid fa-gear"></i></span>',
             '  <span class="la_hbtn" id="la_close" title="Close"><i class="fa-solid fa-xmark"></i></span>',
             '</div>',
@@ -1806,6 +1808,11 @@
         buildSettingsUI();
         makeDraggable(panel, [el('la_header'), el('la_docbar'), el('la_quick')]);
 
+        el('la_full').addEventListener('click', () => {
+            settings.fullscreen = !settings.fullscreen;
+            applyFullscreen();
+            persist();
+        });
         el('la_close').addEventListener('click', () => togglePanel(false));
         el('la_gear').addEventListener('click', () => {
             el('la_settings').classList.toggle('la_open');
@@ -2345,6 +2352,26 @@
         updateSub();
     }
 
+    function applyFullscreen() {
+        const panel = el('la_panel');
+        if (!panel) return;
+        const on = !!settings.fullscreen;
+        panel.classList.toggle('la_full', on);
+        const ic = el('la_full')?.querySelector('i');
+        if (ic) ic.className = on ? 'fa-solid fa-compress' : 'fa-solid fa-expand';
+        const btn = el('la_full');
+        if (btn) btn.title = on ? 'Exit fullscreen' : 'Fullscreen';
+        if (on) {
+            // Clear any inline drag offsets so the CSS fullscreen rules win.
+            panel.style.left = '';
+            panel.style.top = '';
+            panel.style.right = '';
+            panel.style.bottom = '';
+            panel.style.width = '';
+            panel.style.height = '';
+        }
+    }
+
     function togglePanel(force) {
         const panel = el('la_panel');
         if (!panel) return;
@@ -2357,6 +2384,7 @@
             panel.style.top = '';
             panel.style.right = '';
             panel.style.bottom = '';
+            applyFullscreen();
             renderAll();
         }
     }
