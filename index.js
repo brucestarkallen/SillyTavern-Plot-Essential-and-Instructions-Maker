@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.10.3';
+    const VERSION = '0.11.0';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -122,8 +122,8 @@
         '5. At most ONE docedits block per reply, placed at the very END of the reply, after a brief prose explanation of what you changed and why. If nothing needs changing, output no block at all.',
         '6. In prose, refer to the mechanism as the "docedits block" in plain words. The literal angle-bracket tag must appear ONLY around the actual JSON block, never inside explanations.',
         '7. If the document is empty, draft it with "append" edits (one per section works well).',
-        '9. The user may want to discuss before applying. If they reply to talk it over rather than accept, answer in prose with NO block. If they then ask you to reconsider or adjust a proposal, output the improved version in a new block \u2014 it is staged alongside the earlier proposal so they can compare and pick; do not resend proposals that have not changed.',
-        '8. Read-only context may appear as [REFERENCE DOCUMENT: name] blocks. By default every edit applies to the main [DOCUMENT]. To edit a reference document instead, add "doc": "its exact name" to that edit object \u2014 and whenever any reference documents are present, include "doc" on EVERY edit so the target is never ambiguous. Copy "find"/"insert_after" character-for-character from the document you are targeting.',
+        '8. The user may want to discuss before applying. If they reply to talk it over rather than accept, answer in prose with NO block. If they then ask you to reconsider or adjust a proposal, output the improved version in a new block \u2014 it is staged alongside the earlier proposal so they can compare and pick; do not resend proposals that have not changed.',
+        '9. Read-only context may appear as [REFERENCE DOCUMENT: name] blocks. By default every edit applies to the main [DOCUMENT]. To edit a reference document instead, add "doc": "its exact name" to that edit object \u2014 and whenever any reference documents are present, include "doc" on EVERY edit so the target is never ambiguous. Copy "find"/"insert_after" character-for-character from the document you are targeting.',
     ].join('\n');
 
     // ------------------------------------------------------------------
@@ -140,6 +140,8 @@
         barOpen: false,   // management fold-out under the doc/session row
         fullscreen: false,// panel fills the viewport
         batchLog: [],  // ids of applied batches, newest last (cross-doc undo)
+        compareIds: [],           // docs selected in the compare view (max 4)
+        compareLayout: 'columns', // 'columns' | 'stacked'
         docs: [],      // [{id, name, text, updated, presetId, history, undo, refs}]
         presets: [],   // [{id, name, prompt}]
     };
@@ -172,6 +174,21 @@
 
     function oneLine(s) {
         return String(s || '').replace(/\s+/g, ' ').trim();
+    }
+
+    // Coerce a possibly-string numeric field to a finite number, else default.
+    // Models frequently emit numeric worldbook fields as JSON strings
+    // ("order":"250"); Number.isFinite("250") is false, so the raw guard used
+    // to silently drop them back to defaults. This recovers them.
+    function numOr(v, d) {
+        if (typeof v === 'number') return Number.isFinite(v) ? v : d;
+        if (typeof v === 'string') {
+            const t = v.trim();
+            if (!t) return d;
+            const n = Number(t);
+            return Number.isFinite(n) ? n : d;
+        }
+        return d;
     }
 
     function uid() {
@@ -888,6 +905,22 @@
         return parts.join('\n\n');
     }
 
+    // Keep the last `depth` REAL turns (user/assistant); [STATE] notes ride
+    // along with whichever turns they sit between instead of counting against
+    // the budget, so a run of "Applied: ..." notes can't push actual
+    // conversation out of the window.
+    function pickContextWindow(hist, depth, uptoIdx) {
+        const full = (Number.isInteger(uptoIdx) ? hist.slice(0, uptoIdx) : hist.slice());
+        const kept = [];
+        let turns = 0;
+        for (let i = full.length - 1; i >= 0; i--) {
+            kept.push(full[i]);
+            if (full[i].role !== 'note') turns++;
+            if (turns >= depth) break;
+        }
+        return kept.reverse();
+    }
+
     function buildMessages(doc, uptoIdx) {
         const preset = presetForDoc(doc);
         const sys = String(preset?.prompt || '').trim() + '\n\n' + DOCEDITS_PROTOCOL;
@@ -895,7 +928,7 @@
 
         const depth = Math.max(2, Number(settings.historyDepth) || 16);
         const hist = sess(doc).history;
-        const base = (Number.isInteger(uptoIdx) ? hist.slice(0, uptoIdx) : hist.slice()).slice(-depth);
+        const base = pickContextWindow(hist, depth, uptoIdx);
 
         let lastUser = -1;
         for (let i = base.length - 1; i >= 0; i--) {
@@ -1582,37 +1615,12 @@
         toast(ok ? 'Document copied (' + (doc.text || '').length.toLocaleString() + ' chars).' : 'Copy failed \u2014 open View and select manually.', ok ? 'success' : 'error');
     }
 
-    function worldbookPreviewText(doc) {
-        const p = parseWorldbook(doc.text);
-        if (p.error) return '(not valid worldbook JSON: ' + p.error + ')\n\nSwitch to raw editing to fix it.';
-        if (!p.entries.length) return '(no entries yet)';
-        const icon = { blue: '\uD83D\uDD35', green: '\uD83D\uDFE2', chain: '\uD83D\uDD17' };
-        return p.entries.map((e, i) => {
-            const posLabel = { before_char: '\u2191before-char', after_char: '\u2193after-char', at_depth: '@depth ' + e.depth };
-            const head = (icon[e.strategy] || '\u2022') + ' ' + (e.name || '(unnamed)') + '  [' + e.strategy + ' \u00B7 ' + (posLabel[e.position] || e.position) + ' \u00B7 order ' + e.order + (e.probability !== 100 ? ' \u00B7 ' + e.probability + '%' : '') + ']';
-            const keys = e.keys.length ? '\n   keys: ' + e.keys.join(', ') : (e.strategy === 'green' ? '\n   keys: (none \u2014 will not fire!)' : '');
-            const body = e.content ? '\n   ' + e.content.replace(/\n/g, '\n   ') : '\n   (empty content)';
-            return (i + 1) + '. ' + head + keys + body;
-        }).join('\n\n');
-    }
-
     function viewDoc() {
         const doc = activeDoc();
         if (!doc) { toast('No document selected.', 'warning'); return; }
         const isWB = docLooksLikeWorldbook(doc);
         if (isWB) {
-            const p = parseWorldbook(doc.text);
-            const count = p.entries.length;
-            showEditor({
-                title: '\uD83C\uDF10 ' + doc.name + ' \u00B7 ' + count + ' entr' + (count === 1 ? 'y' : 'ies'),
-                text: worldbookPreviewText(doc),
-                saveLabel: 'Edit raw JSON',
-                readonlyNote: 'Read-only worldbook preview. Tap "Edit raw JSON" to change the underlying JSON, or ask the agent to edit entries.',
-                bound: { kind: 'wbpreview', id: doc.id },
-                onSave: () => { // "Edit raw JSON" reopens in raw mode
-                    viewDocRaw(doc.id);
-                },
-            });
+            showWorldbookManager(doc.id);
             return;
         }
         showEditor({
@@ -1764,6 +1772,7 @@
             '      <select id="la_preset" title="Agent preset (brain) for this document"></select>',
             '      <button class="la_btn" id="la_refs" title="Attach other documents as read-only references for this conversation">\uD83D\uDD17<span id="la_refcount">0</span></button>',
             '      <button class="la_btn" id="la_view" title="View/Edit the document in a window">\uD83D\uDC41 View</button>',
+            '      <button class="la_btn" id="la_cmp" title="Compare 2\u20134 documents side by side">\u2696 Cmp</button>',
             '    </div>',
             '    <div class="la_dbrow la_grp">',
             '      <span class="la_grplbl" title="Document actions">Doc</span>',
@@ -1814,7 +1823,7 @@
             persist();
         });
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && settings.fullscreen && el('la_panel')?.classList.contains('la_open')) {
+            if (e.key === 'Escape' && settings.fullscreen && el('la_panel')?.classList.contains('la_open') && !anyFloatWinOpen()) {
                 settings.fullscreen = false;
                 applyFullscreen();
                 persist();
@@ -1877,6 +1886,7 @@
         el('la_wbexp').addEventListener('click', () => exportWorldbookST());
         el('la_dcopy').addEventListener('click', () => copyDoc());
         el('la_view').addEventListener('click', () => viewDoc());
+        el('la_cmp').addEventListener('click', () => showCompare());
         el('la_retry').addEventListener('click', () => retryLast());
         el('la_dellast').addEventListener('click', () => deleteLastExchange());
         el('la_undo').addEventListener('click', () => undoLast());
@@ -2504,6 +2514,59 @@
         return 1; // after_char
     }
 
+    // Rough token estimate (~4 chars/token for English prose). Deliberately an
+    // approximation — labelled with ~ everywhere it surfaces. Only an entry's
+    // content is injected at runtime, so that is what we count for budget.
+    function estTokens(s) {
+        const t = String(s || '');
+        if (!t) return 0;
+        return Math.max(1, Math.ceil(t.length / 4));
+    }
+
+    // Budget summary for a worldbook. `alwaysOn` is the permanent cost: blue
+    // (constant) entries are in context every single message, so that subtotal
+    // is the one to watch. `total` is the worst case if everything fired at once.
+    function worldbookTokenStats(entries) {
+        const list = (entries || []).map(e => ({
+            name: e.name || '(unnamed)',
+            strategy: e.strategy,
+            tokens: estTokens(e.content),
+        }));
+        const total = list.reduce((n, e) => n + e.tokens, 0);
+        const alwaysOn = list.filter(e => e.strategy === 'blue').reduce((n, e) => n + e.tokens, 0);
+        const blueCount = list.filter(e => e.strategy === 'blue').length;
+        return { perEntry: list, total, alwaysOn, blueCount, count: list.length };
+    }
+
+    // Serialize parsed entries back to the canonical friendly document format
+    // (the shape the Worldbook Maker prompt authors). Required fields always
+    // emitted; optional fields only when they differ from the safe default, so
+    // the JSON stays readable. This is the inverse of parseWorldbook for the
+    // fields that matter, and the backbone of Repair + per-entry editing.
+    function serializeWorldbook(entries) {
+        const arr = (entries || []).map(e => {
+            const o = {
+                name: e.name || '(unnamed)',
+                keys: Array.isArray(e.keys) ? e.keys : [],
+                content: String(e.content || ''),
+                strategy: ['blue', 'green', 'chain'].includes(e.strategy) ? e.strategy : 'green',
+            };
+            const order = numOr(e.order, 100);
+            if (order !== 100) o.order = order;
+            const pos = normalizePosition(e.position);
+            if (pos !== 'after_char') o.position = pos;
+            if (pos === 'at_depth') {
+                const depth = Math.max(0, Math.round(numOr(e.depth, 4)));
+                if (depth !== 4) o.depth = depth;
+            }
+            const prob = Math.max(0, Math.min(100, numOr(e.probability, 100)));
+            if (prob !== 100) o.probability = prob;
+            if (e.comment) o.comment = String(e.comment);
+            return o;
+        });
+        return JSON.stringify(arr, null, 2);
+    }
+
     // Parse a worldbook document (a JSON array of entry objects). Tolerant of
     // a top-level array or an object with an `entries` array. Returns
     // {entries:[...], error?:string}. Never throws.
@@ -2541,10 +2604,10 @@
                 keys,
                 content: String(e.content ?? '').trim(),
                 strategy: strat,
-                order: Number.isFinite(e.order) ? e.order : 100,
+                order: numOr(e.order, 100),
                 position: normalizePosition(e.position),
-                depth: Number.isFinite(e.depth) ? Math.max(0, Math.round(e.depth)) : 4,
-                probability: Number.isFinite(e.probability) ? Math.max(0, Math.min(100, e.probability)) : 100,
+                depth: Math.max(0, Math.round(numOr(e.depth, 4))),
+                probability: Math.max(0, Math.min(100, numOr(e.probability, 100))),
                 comment: String(e.comment ?? '').trim(),
             });
         }
@@ -2647,6 +2710,524 @@
         if (warns.length) addBubble('note', 'Worldbook export warnings:\n\u2022 ' + warns.slice(0, 8).join('\n\u2022 ') + (warns.length > 8 ? '\n\u2022 \u2026and ' + (warns.length - 8) + ' more' : ''));
     }
 
+    // ------------------------------------------------------------------
+    // Generic floating window shell (inline-styled — a stale cached CSS file
+    // must never break these overlays). Reused by the worldbook manager and
+    // the compare view. Backdrop + draggable header + scrollable body.
+    // ------------------------------------------------------------------
+
+    function anyFloatWinOpen() {
+        for (const id of ['la_viewer_win', 'la_wbman', 'la_compare']) {
+            const w = el(id);
+            if (w && w.style.display !== 'none') return true;
+        }
+        return false;
+    }
+
+    function mkFlatBtn(label) {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.style.cssText = 'cursor:pointer;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.08);color:inherit;border-radius:6px;padding:7px 11px;font-size:0.82em;';
+        return b;
+    }
+    function mkMiniBtn(label) {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.style.cssText = 'cursor:pointer;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.08);color:inherit;border-radius:6px;padding:4px 9px;font-size:0.78em;flex:0 0 auto;';
+        return b;
+    }
+
+    function floatWindow(id, opts) {
+        opts = opts || {};
+        let backdrop = el(id + '_bd');
+        let box = el(id);
+        if (!box) {
+            backdrop = document.createElement('div');
+            backdrop.id = id + '_bd';
+            backdrop.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:9998;display:none;background:rgba(0,0,0,0.5);';
+            document.body.appendChild(backdrop);
+
+            box = document.createElement('div');
+            box.id = id;
+            box.style.cssText = 'position:fixed;z-index:9999;display:none;flex-direction:column;border-radius:10px;border:1px solid rgba(255,255,255,0.3);background:#1e1e1e;color:#dddddd;box-shadow:0 8px 30px rgba(0,0,0,0.6);overflow:hidden;';
+
+            const head = document.createElement('div');
+            head.id = id + '_head';
+            head.style.cssText = 'display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,0.2);flex:0 0 auto;cursor:move;user-select:none;touch-action:none;background:rgba(255,255,255,0.05);flex-wrap:wrap;';
+            const title = document.createElement('span');
+            title.id = id + '_title';
+            title.style.cssText = 'flex:1 1 auto;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:120px;';
+            const closeBtn = document.createElement('button');
+            closeBtn.textContent = 'Close';
+            closeBtn.style.cssText = 'cursor:pointer;border:1px solid rgba(255,255,255,0.35);background:rgba(220,90,90,0.3);color:inherit;border-radius:6px;padding:8px 14px;font-size:0.9em;flex:0 0 auto;';
+            const doClose = () => { backdrop.style.display = 'none'; box.style.display = 'none'; };
+            closeBtn.addEventListener('click', doClose);
+            head.appendChild(title);
+            head.appendChild(closeBtn);
+
+            const bodyEl = document.createElement('div');
+            bodyEl.id = id + '_body';
+            bodyEl.style.cssText = 'flex:1 1 auto;overflow-y:auto;padding:10px;box-sizing:border-box;';
+
+            box.appendChild(head);
+            box.appendChild(bodyEl);
+            document.body.appendChild(box);
+
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && box.style.display !== 'none') doClose();
+            });
+            makeDraggable(box, head);
+        }
+        // Snap to a safe spot + size every open (Android WebView off-screen lesson).
+        box.style.left = opts.left || '2vw';
+        box.style.top = opts.top || '54px';
+        box.style.right = 'auto';
+        box.style.bottom = 'auto';
+        box.style.width = opts.width || '96vw';
+        box.style.height = opts.height || '80vh';
+        el(id + '_title').textContent = String(opts.title || '');
+        backdrop.style.display = 'block';
+        box.style.display = 'flex';
+        return { box, backdrop, body: el(id + '_body'), close: () => { backdrop.style.display = 'none'; box.style.display = 'none'; } };
+    }
+
+    // Apply text changes to one or more documents as a single undoable batch,
+    // wired into the SAME batch log the main Undo button walks (so promoting an
+    // entry across two documents is reverted by one Undo press). Mirrors the
+    // commit tail of applyEdits.
+    function commitDocChanges(changes, noteLabel) {
+        const real = (changes || []).filter(c => c && c.doc && c.after !== c.before);
+        if (!real.length) return null;
+        const batchId = uid();
+        for (const c of real) {
+            pushUndo(c.doc, c.before, noteLabel || 'edit', batchId);
+            c.doc.text = c.after;
+            c.doc.updated = Date.now();
+        }
+        if (!Array.isArray(settings.batchLog)) settings.batchLog = [];
+        settings.batchLog.push(batchId);
+        while (settings.batchLog.length > 8) settings.batchLog.shift();
+        persist();
+        const active = activeDoc();
+        if (active) pushHistory(active, 'note', (noteLabel || 'Edited') + ': ' + real.map(c => '"' + c.doc.name + '"').join(', ') + '.');
+        for (const c of real) syncOpenDocEditor(c.doc, c.before);
+        updateSub();
+        renderHistory();
+        return batchId;
+    }
+
+    // ------------------------------------------------------------------
+    // Worldbook manager: per-entry editing, validate/repair, token budget,
+    // and promote (move an entry into another document, e.g. the PE).
+    // Opened by View on a worldbook document instead of the text preview.
+    // ------------------------------------------------------------------
+
+    function showWorldbookManager(docId) {
+        const doc0 = settings.docs.find(d => d.id === docId) || activeDoc();
+        if (!doc0) { toast('No document selected.', 'warning'); return; }
+        const win = floatWindow('la_wbman', { title: '\uD83C\uDF10 ' + doc0.name, height: '82vh' });
+        win.box._wbDocId = doc0.id;
+        wbRenderList(win);
+    }
+
+    function wbCurrentDoc(win) {
+        return settings.docs.find(d => d.id === win.box._wbDocId) || null;
+    }
+
+    function repairWorldbook(doc) {
+        const p = parseWorldbook(doc.text);
+        if (p.error) { toast('Cannot repair \u2014 JSON too broken to parse: ' + p.error + '. Fix it in raw JSON.', 'error'); return; }
+        const clean = serializeWorldbook(p.entries);
+        const before = doc.text;
+        if (clean.trim() === before.trim()) { toast('Already clean \u2014 nothing to repair.', 'info'); return; }
+        commitDocChanges([{ doc, before, after: clean }], 'Repaired worldbook');
+        toast('Repaired & normalized ' + p.entries.length + ' entr' + (p.entries.length === 1 ? 'y' : 'ies') + ' (formatting + field types).', 'success');
+    }
+
+    function wbPromoteEntry(win, index, targetId) {
+        const doc = wbCurrentDoc(win);
+        const target = settings.docs.find(d => d.id === targetId);
+        if (!doc || !target) { toast('Pick a valid target document.', 'warning'); return; }
+        const entries = parseWorldbook(doc.text).entries;
+        const e = entries[index];
+        if (!e) return;
+        if (!confirm('Move "' + (e.name || 'entry') + '" into "' + target.name + '" and remove it from this worldbook?')) return;
+        const beforeT = String(target.text || '');
+        const section = '## ' + (e.name || 'Untitled') + '\n\n' + (e.content || '');
+        const trimmed = beforeT.replace(/\s+$/, '');
+        const afterT = trimmed.length ? (trimmed + '\n\n' + section + '\n') : (section + '\n');
+        const beforeW = doc.text;
+        const afterW = serializeWorldbook(entries.filter((_, i) => i !== index));
+        commitDocChanges(
+            [{ doc: target, before: beforeT, after: afterT }, { doc, before: beforeW, after: afterW }],
+            'Moved worldbook entry \u2192 "' + target.name + '"'
+        );
+        toast('Moved "' + (e.name || 'entry') + '" into "' + target.name + '".', 'success');
+        wbRenderList(win);
+    }
+
+    function wbSourcePicker(win) {
+        const doc = wbCurrentDoc(win);
+        const body = win.body;
+        body.innerHTML = '';
+        if (!doc) { body.textContent = 'Document no longer exists.'; return; }
+        el('la_wbman_title').textContent = '\uD83C\uDF10 ' + doc.name + ' \u00B7 from document';
+        const back = mkFlatBtn('\u2190 Back');
+        back.addEventListener('click', () => wbRenderList(win));
+        body.appendChild(back);
+        const h = document.createElement('div');
+        h.style.cssText = 'margin:10px 0;font-size:0.85em;opacity:0.8;line-height:1.4;';
+        h.textContent = 'Pick a document to turn into a new worldbook entry \u2014 its text becomes the entry content (the source document is not changed):';
+        body.appendChild(h);
+        const others = settings.docs.filter(d => d.id !== doc.id);
+        if (!others.length) {
+            const e = document.createElement('div');
+            e.style.cssText = 'opacity:0.6;';
+            e.textContent = 'No other documents exist yet.';
+            body.appendChild(e);
+            return;
+        }
+        for (const d of others) {
+            const b = mkFlatBtn('\uD83D\uDCC4 ' + (oneLine(d.name).slice(0, 34) || 'Untitled') + '  \u00B7 ' + (d.text || '').length.toLocaleString() + ' ch');
+            b.style.display = 'block';
+            b.style.width = '100%';
+            b.style.textAlign = 'left';
+            b.style.marginBottom = '6px';
+            b.addEventListener('click', () => wbRenderEntryForm(win, null, { name: d.name, content: d.text || '' }));
+            body.appendChild(b);
+        }
+    }
+
+    function wbRenderList(win) {
+        const doc = wbCurrentDoc(win);
+        const body = win.body;
+        body.innerHTML = '';
+        if (!doc) { body.textContent = 'Document no longer exists.'; return; }
+        el('la_wbman_title').textContent = '\uD83C\uDF10 ' + doc.name;
+        const p = parseWorldbook(doc.text);
+        if (p.error) {
+            const err = document.createElement('div');
+            err.style.cssText = 'padding:10px 2px;color:#ff9c9c;font-size:0.9em;line-height:1.4;';
+            err.textContent = 'This worldbook is not valid JSON: ' + p.error + '. Open raw JSON to fix it, or ask the agent.';
+            body.appendChild(err);
+            const rawB = mkFlatBtn('{ } Edit raw JSON');
+            rawB.addEventListener('click', () => { win.close(); viewDocRaw(doc.id); });
+            body.appendChild(rawB);
+            return;
+        }
+        const entries = p.entries;
+        const stats = worldbookTokenStats(entries);
+        const warns = lintWorldbook(entries);
+
+        const hdr = document.createElement('div');
+        hdr.style.cssText = 'font-size:0.82em;opacity:0.82;margin-bottom:8px;line-height:1.5;';
+        hdr.textContent = entries.length + ' entr' + (entries.length === 1 ? 'y' : 'ies')
+            + '  \u00B7  ~' + stats.total.toLocaleString() + ' tokens total'
+            + (stats.blueCount ? '  \u00B7  ~' + stats.alwaysOn.toLocaleString() + ' always-on (' + stats.blueCount + ' blue)' : '');
+        body.appendChild(hdr);
+
+        const bar = document.createElement('div');
+        bar.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;';
+        const addB = mkFlatBtn('\u2795 Add entry');
+        addB.addEventListener('click', () => wbRenderEntryForm(win, null));
+        const fromB = mkFlatBtn('\u2795 From doc');
+        fromB.title = 'Create an entry from another document\u2019s content';
+        fromB.addEventListener('click', () => wbSourcePicker(win));
+        const repairB = mkFlatBtn('\uD83D\uDD27 Validate & repair');
+        repairB.addEventListener('click', () => { repairWorldbook(doc); wbRenderList(win); });
+        const expB = mkFlatBtn('\uD83C\uDF10\u2192ST export');
+        expB.addEventListener('click', () => exportWorldbookST());
+        const rawB = mkFlatBtn('{ } Raw JSON');
+        rawB.addEventListener('click', () => { win.close(); viewDocRaw(doc.id); });
+        [addB, fromB, repairB, expB, rawB].forEach(b => bar.appendChild(b));
+        body.appendChild(bar);
+
+        if (warns.length) {
+            const w = document.createElement('div');
+            w.style.cssText = 'font-size:0.76em;color:#ffd479;opacity:0.9;margin-bottom:10px;line-height:1.45;';
+            w.textContent = '\u26A0 ' + warns.slice(0, 6).join('  \u00B7  ') + (warns.length > 6 ? '  \u00B7 \u2026and ' + (warns.length - 6) + ' more' : '');
+            body.appendChild(w);
+        }
+
+        if (!entries.length) {
+            const empty = document.createElement('div');
+            empty.style.cssText = 'opacity:0.6;padding:14px 4px;text-align:center;font-size:0.9em;line-height:1.5;';
+            empty.textContent = 'No entries yet. Tap "Add entry", pull one "From doc", or ask the agent to add lore.';
+            body.appendChild(empty);
+            return;
+        }
+
+        const icon = { blue: '\uD83D\uDD35', green: '\uD83D\uDFE2', chain: '\uD83D\uDD17' };
+        const posLabel = { before_char: '\u2191before', after_char: '\u2193after', at_depth: '@depth' };
+        entries.forEach((e, i) => {
+            const card = document.createElement('div');
+            card.style.cssText = 'border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:8px 10px;margin-bottom:8px;background:rgba(255,255,255,0.03);';
+            const top = document.createElement('div');
+            top.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px;';
+            const nm = document.createElement('span');
+            nm.textContent = (icon[e.strategy] || '\u2022') + ' ' + (e.name || '(unnamed)');
+            nm.style.cssText = 'font-weight:600;flex:1 1 auto;min-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+            const editB = mkMiniBtn('\u270E Edit');
+            editB.addEventListener('click', () => wbRenderEntryForm(win, i));
+            const delB = mkMiniBtn('\uD83D\uDDD1');
+            delB.title = 'Delete entry';
+            delB.addEventListener('click', () => {
+                if (!confirm('Delete "' + (e.name || '') + '"?')) return;
+                const before = doc.text;
+                const after = serializeWorldbook(entries.filter((_, x) => x !== i));
+                commitDocChanges([{ doc, before, after }], 'Deleted worldbook entry');
+                wbRenderList(win);
+            });
+            top.appendChild(nm);
+            top.appendChild(editB);
+            top.appendChild(delB);
+            card.appendChild(top);
+
+            const meta = document.createElement('div');
+            meta.style.cssText = 'font-size:0.75em;opacity:0.65;margin-bottom:4px;';
+            meta.textContent = e.strategy + ' \u00B7 ' + (posLabel[e.position] || e.position)
+                + (e.position === 'at_depth' ? (' ' + e.depth) : '') + ' \u00B7 order ' + e.order
+                + (e.probability !== 100 ? (' \u00B7 ' + e.probability + '%') : '') + ' \u00B7 ~' + estTokens(e.content) + ' tok';
+            card.appendChild(meta);
+
+            if (e.keys.length || e.strategy === 'green') {
+                const keys = document.createElement('div');
+                keys.style.cssText = 'font-size:0.75em;opacity:0.7;margin-bottom:4px;word-break:break-word;';
+                keys.textContent = 'keys: ' + (e.keys.length ? e.keys.join(', ') : '(none \u2014 will not fire!)');
+                card.appendChild(keys);
+            }
+            const prev = document.createElement('div');
+            prev.style.cssText = 'font-size:0.8em;opacity:0.85;white-space:pre-wrap;word-break:break-word;max-height:80px;overflow:hidden;';
+            prev.textContent = e.content || '(empty content)';
+            card.appendChild(prev);
+            body.appendChild(card);
+        });
+    }
+
+    function wbRenderEntryForm(win, index, seed) {
+        const doc = wbCurrentDoc(win);
+        const body = win.body;
+        body.innerHTML = '';
+        if (!doc) { body.textContent = 'Document no longer exists.'; return; }
+        const entries = parseWorldbook(doc.text).entries;
+        const isNew = index == null;
+        const e = isNew
+            ? { name: (seed && seed.name) || '', keys: [], content: (seed && seed.content) || '', strategy: 'green', order: 100, position: 'after_char', depth: 4, probability: 100, comment: '' }
+            : entries[index];
+        if (!e) { wbRenderList(win); return; }
+        el('la_wbman_title').textContent = '\uD83C\uDF10 ' + doc.name + ' \u00B7 ' + (isNew ? 'new entry' : 'edit entry');
+
+        const inputStyle = 'width:100%;box-sizing:border-box;background:rgba(0,0,0,0.3);color:inherit;border:1px solid rgba(255,255,255,0.25);border-radius:6px;padding:8px;font-size:0.9em;';
+        const field = (labelText, control, hintText) => {
+            const w = document.createElement('div');
+            w.style.cssText = 'margin-bottom:10px;';
+            const l = document.createElement('label');
+            l.textContent = labelText;
+            l.style.cssText = 'display:block;font-size:0.8em;opacity:0.85;margin-bottom:3px;';
+            w.appendChild(l);
+            w.appendChild(control);
+            if (hintText) {
+                const hh = document.createElement('div');
+                hh.textContent = hintText;
+                hh.style.cssText = 'font-size:0.72em;opacity:0.5;margin-top:2px;line-height:1.35;';
+                w.appendChild(hh);
+            }
+            return w;
+        };
+
+        const nameIn = document.createElement('input'); nameIn.type = 'text'; nameIn.value = e.name || ''; nameIn.style.cssText = inputStyle;
+        const stratSel = document.createElement('select'); stratSel.style.cssText = inputStyle;
+        [['green', '\uD83D\uDFE2 green \u2014 fires on keywords (default)'], ['blue', '\uD83D\uDD35 blue \u2014 always in context (spine only)'], ['chain', '\uD83D\uDD17 chain \u2014 semantic/vector only']]
+            .forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; stratSel.appendChild(o); });
+        stratSel.value = e.strategy || 'green';
+        const keysIn = document.createElement('input'); keysIn.type = 'text'; keysIn.value = (e.keys || []).join(', '); keysIn.style.cssText = inputStyle;
+        const posSel = document.createElement('select'); posSel.style.cssText = inputStyle;
+        [['after_char', '\u2193 after char defs (default)'], ['before_char', '\u2191 before char defs (world/setting)'], ['at_depth', '@ at depth (live/salient)']]
+            .forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; posSel.appendChild(o); });
+        posSel.value = e.position || 'after_char';
+        const orderIn = document.createElement('input'); orderIn.type = 'number'; orderIn.value = e.order; orderIn.style.cssText = inputStyle;
+        const probIn = document.createElement('input'); probIn.type = 'number'; probIn.min = '0'; probIn.max = '100'; probIn.value = e.probability; probIn.style.cssText = inputStyle;
+        const depthIn = document.createElement('input'); depthIn.type = 'number'; depthIn.min = '0'; depthIn.value = e.depth; depthIn.style.cssText = inputStyle;
+        const contentTa = document.createElement('textarea'); contentTa.value = e.content || ''; contentTa.style.cssText = inputStyle + 'min-height:140px;resize:vertical;font-family:monospace;line-height:1.4;';
+        const commentIn = document.createElement('input'); commentIn.type = 'text'; commentIn.value = e.comment || ''; commentIn.style.cssText = inputStyle;
+
+        body.appendChild(field('Name (unique title)', nameIn));
+        body.appendChild(field('Strategy', stratSel));
+        body.appendChild(field('Keys (comma-separated)', keysIn, 'Proper name, aliases, epithets, titles, and the everyday words a scene would use.'));
+        body.appendChild(field('Position', posSel));
+        const numRow = document.createElement('div'); numRow.style.cssText = 'display:flex;gap:8px;';
+        const ow = field('Order (higher wins budget)', orderIn); ow.style.flex = '1 1 0';
+        const pw = field('Probability %', probIn); pw.style.flex = '1 1 0';
+        numRow.appendChild(ow); numRow.appendChild(pw);
+        body.appendChild(numRow);
+        const depthField = field('Depth (higher = further from latest message)', depthIn);
+        body.appendChild(depthField);
+        const syncDepth = () => { depthField.style.display = posSel.value === 'at_depth' ? 'block' : 'none'; };
+        posSel.addEventListener('change', syncDepth); syncDepth();
+        body.appendChild(field('Content (the lore text injected at runtime)', contentTa));
+        body.appendChild(field('Comment (optional author note)', commentIn));
+
+        const readForm = () => ({
+            name: nameIn.value.trim() || '(unnamed)',
+            keys: keysIn.value.split(',').map(k => k.trim()).filter(Boolean),
+            content: contentTa.value,
+            strategy: stratSel.value,
+            order: numOr(orderIn.value, 100),
+            position: posSel.value,
+            depth: Math.max(0, Math.round(numOr(depthIn.value, 4))),
+            probability: Math.max(0, Math.min(100, numOr(probIn.value, 100))),
+            comment: commentIn.value.trim(),
+        });
+
+        const others = settings.docs.filter(d => d.id !== doc.id);
+        if (!isNew && others.length) {
+            const moveWrap = document.createElement('div');
+            moveWrap.style.cssText = 'margin-top:14px;padding-top:10px;border-top:1px dashed rgba(255,255,255,0.2);';
+            const ml = document.createElement('div');
+            ml.textContent = 'Move this entry into another document (appends its content there, removes it here \u2014 one Undo reverts both):';
+            ml.style.cssText = 'font-size:0.78em;opacity:0.7;margin-bottom:6px;line-height:1.4;';
+            const mrow = document.createElement('div'); mrow.style.cssText = 'display:flex;gap:8px;';
+            const tsel = document.createElement('select'); tsel.style.cssText = inputStyle + 'flex:1 1 auto;';
+            for (const d of others) { const o = document.createElement('option'); o.value = d.id; o.textContent = oneLine(d.name).slice(0, 30); tsel.appendChild(o); }
+            const mbtn = mkFlatBtn('Move \u2192'); mbtn.style.flex = '0 0 auto';
+            mbtn.addEventListener('click', () => wbPromoteEntry(win, index, tsel.value));
+            mrow.appendChild(tsel); mrow.appendChild(mbtn);
+            moveWrap.appendChild(ml); moveWrap.appendChild(mrow);
+            body.appendChild(moveWrap);
+        }
+
+        const btnRow = document.createElement('div');
+        btnRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;position:sticky;bottom:-10px;background:#1e1e1e;padding:8px 0;';
+        const mkBtn = (label, bg) => { const b = document.createElement('button'); b.textContent = label; b.style.cssText = 'cursor:pointer;border:1px solid rgba(255,255,255,0.3);background:' + bg + ';color:inherit;border-radius:6px;padding:9px 14px;font-size:0.9em;'; return b; };
+        const saveBtn = mkBtn(isNew ? 'Add entry' : 'Save entry', 'rgba(80,200,120,0.32)'); saveBtn.style.fontWeight = '700';
+        const backBtn = mkBtn('\u2190 Back', 'rgba(255,255,255,0.1)');
+        saveBtn.addEventListener('click', () => {
+            const ne = readForm();
+            const next = isNew ? entries.concat([ne]) : entries.map((x, i) => i === index ? ne : x);
+            const before = doc.text;
+            const after = serializeWorldbook(next);
+            commitDocChanges([{ doc, before, after }], isNew ? 'Added worldbook entry' : 'Edited worldbook entry');
+            toast((isNew ? 'Added "' : 'Saved "') + ne.name + '".', 'success');
+            wbRenderList(win);
+        });
+        backBtn.addEventListener('click', () => wbRenderList(win));
+        btnRow.appendChild(saveBtn);
+        btnRow.appendChild(backBtn);
+        if (!isNew) {
+            const delBtn = mkBtn('\uD83D\uDDD1 Delete', 'rgba(220,80,80,0.28)');
+            delBtn.addEventListener('click', () => {
+                if (!confirm('Delete entry "' + (e.name || '') + '" from the worldbook?')) return;
+                const before = doc.text;
+                const after = serializeWorldbook(entries.filter((_, i) => i !== index));
+                commitDocChanges([{ doc, before, after }], 'Deleted worldbook entry');
+                toast('Deleted "' + (e.name || 'entry') + '".', 'info');
+                wbRenderList(win);
+            });
+            btnRow.appendChild(delBtn);
+        }
+        body.appendChild(btnRow);
+    }
+
+    // ------------------------------------------------------------------
+    // Compare view: 2\u20134 documents side by side (columns) or stacked, with a
+    // layout toggle. Read-only, for drawing inspiration across drafts.
+    // ------------------------------------------------------------------
+
+    function showCompare() {
+        if (!settings.docs.length) { toast('No documents to compare yet.', 'warning'); return; }
+        const win = floatWindow('la_compare', { title: '\u2696 Compare documents', height: '82vh' });
+        renderCompareBody(win);
+    }
+
+    function renderCompareBody(win) {
+        const body = win.body;
+        body.innerHTML = '';
+
+        const controls = document.createElement('div');
+        controls.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;';
+        const layoutBtn = document.createElement('button');
+        layoutBtn.style.cssText = 'cursor:pointer;border:1px solid rgba(255,255,255,0.35);background:rgba(255,255,255,0.12);color:inherit;border-radius:6px;padding:7px 12px;font-size:0.85em;';
+        layoutBtn.title = 'Toggle side-by-side columns vs stacked rows';
+        const setLayoutLabel = () => { layoutBtn.textContent = settings.compareLayout === 'stacked' ? '\u2637 Stacked' : '\u2016 Columns'; };
+        setLayoutLabel();
+        layoutBtn.addEventListener('click', () => {
+            settings.compareLayout = settings.compareLayout === 'stacked' ? 'columns' : 'stacked';
+            persist();
+            renderCompareBody(win);
+        });
+        controls.appendChild(layoutBtn);
+        const hint = document.createElement('span');
+        hint.style.cssText = 'font-size:0.75em;opacity:0.6;';
+        hint.textContent = 'Pick 2\u20134 documents to compare';
+        controls.appendChild(hint);
+        body.appendChild(controls);
+
+        const chips = document.createElement('div');
+        chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;';
+        const liveSel = () => (settings.compareIds || []).filter(id => settings.docs.some(d => d.id === id));
+        for (const d of settings.docs) {
+            const on = liveSel().includes(d.id);
+            const chip = document.createElement('button');
+            chip.textContent = (on ? '\u2611 ' : '\u2610 ') + (oneLine(d.name).slice(0, 24) || 'Untitled');
+            chip.style.cssText = 'cursor:pointer;border:1px solid rgba(255,255,255,0.3);background:' + (on ? 'rgba(80,160,240,0.3)' : 'rgba(255,255,255,0.06)') + ';color:inherit;border-radius:14px;padding:6px 11px;font-size:0.82em;';
+            chip.addEventListener('click', () => {
+                let cur = liveSel();
+                if (cur.includes(d.id)) cur = cur.filter(x => x !== d.id);
+                else {
+                    if (cur.length >= 4) { toast('Compare up to 4 documents at once.', 'warning'); return; }
+                    cur = cur.concat([d.id]);
+                }
+                settings.compareIds = cur;
+                persist();
+                renderCompareBody(win);
+            });
+            chips.appendChild(chip);
+        }
+        body.appendChild(chips);
+
+        const selected = liveSel();
+        if (selected.length < 2) {
+            const note = document.createElement('div');
+            note.style.cssText = 'opacity:0.6;font-size:0.9em;padding:20px 4px;text-align:center;line-height:1.5;';
+            note.textContent = 'Select at least 2 documents above to compare them.';
+            body.appendChild(note);
+            return;
+        }
+
+        const docs = selected.map(id => settings.docs.find(d => d.id === id)).filter(Boolean);
+        const stacked = settings.compareLayout === 'stacked';
+        const area = document.createElement('div');
+        area.style.cssText = stacked
+            ? 'display:flex;flex-direction:column;gap:10px;'
+            : 'display:flex;flex-direction:row;gap:10px;overflow-x:auto;padding-bottom:6px;';
+        for (const d of docs) {
+            const pane = document.createElement('div');
+            pane.style.cssText = stacked
+                ? 'border:1px solid rgba(255,255,255,0.18);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;max-height:46vh;'
+                : 'flex:0 0 auto;width:82vw;max-width:520px;border:1px solid rgba(255,255,255,0.18);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;max-height:62vh;';
+            const ph = document.createElement('div');
+            ph.style.cssText = 'flex:0 0 auto;padding:6px 9px;background:rgba(255,255,255,0.06);font-weight:600;font-size:0.85em;display:flex;gap:8px;align-items:center;border-bottom:1px solid rgba(255,255,255,0.14);';
+            const pname = document.createElement('span');
+            pname.style.cssText = 'flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+            pname.textContent = d.name;
+            const pmeta = document.createElement('span');
+            pmeta.style.cssText = 'flex:0 0 auto;opacity:0.6;font-size:0.85em;font-weight:400;';
+            pmeta.textContent = (d.text || '').length.toLocaleString() + ' ch';
+            const copyB = document.createElement('button');
+            copyB.textContent = '\uD83D\uDCCB';
+            copyB.title = 'Copy this document';
+            copyB.style.cssText = 'cursor:pointer;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.08);color:inherit;border-radius:5px;padding:3px 7px;font-size:0.9em;flex:0 0 auto;';
+            copyB.addEventListener('click', async () => { const ok = await copyText(d.text || ''); toast(ok ? 'Copied "' + d.name + '".' : 'Copy failed.', ok ? 'success' : 'error'); });
+            ph.appendChild(pname); ph.appendChild(pmeta); ph.appendChild(copyB);
+            const pbody = document.createElement('div');
+            pbody.style.cssText = 'flex:1 1 auto;overflow-y:auto;padding:9px 10px;white-space:pre-wrap;word-break:break-word;font-family:monospace;font-size:0.8em;line-height:1.45;';
+            pbody.textContent = d.text || '(empty)';
+            pane.appendChild(ph); pane.appendChild(pbody);
+            area.appendChild(pane);
+        }
+        body.appendChild(area);
+    }
+
     // Engine internals exposed for automated testing (harmless in production).
     try {
         globalThis.__loreAgentDebug = {
@@ -2654,6 +3235,7 @@
             normChars, levenshtein, locate, applyEditToText, grow, mimeForName, resolveDocByName,
             ensureDocShape, sess, parseWorldbook, lintWorldbook, worldbookToST, docLooksLikeWorldbook,
             normalizePosition, positionToST,
+            numOr, estTokens, worldbookTokenStats, serializeWorldbook, pickContextWindow,
         };
     } catch (e) { /* ignore */ }
 })();

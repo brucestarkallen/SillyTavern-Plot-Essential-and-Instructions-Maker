@@ -150,6 +150,16 @@ MIT.
 
 ## Changelog
 
+- **0.11.0** — worldbook workbench + document compare.
+  - **Bugfix (silent data loss):** numeric worldbook fields emitted as JSON strings (`"order":"300"`, `"depth":"2"`, `"probability":"40"`) were being reset to defaults on load because the guard used `Number.isFinite` on the raw string. They are now coerced and preserved. If a model ever wrote quoted numbers, your per-entry tuning was quietly reverting — this stops that.
+  - **Per-entry worldbook editing:** View on a worldbook now opens a manager with a card per entry. Edit any entry in a real form (name, strategy, keys, position, order, probability, depth, content, comment) — no hand-editing JSON. Add entries, delete entries, or pull one in from another document. Raw-JSON editing is still one tap away.
+  - **Token budget:** the manager shows an estimated token total, a per-entry `~tok` count, and — critically — the **always-on subtotal** for blue (constant) entries, since that is the cost paid on every single message.
+  - **Validate & repair:** one tap re-parses and rewrites the worldbook to clean, canonical JSON (coerces field types, normalizes formatting, drops redundant defaults). No-op if already clean.
+  - **Promote / move:** move a worldbook entry into another document (e.g. your PE) — appends its content there and removes it from the worldbook, as a single undoable action (one Undo reverts both docs).
+  - **Compare view (⚖ Cmp):** open 2–4 documents side by side to cross-reference for inspiration. Toggle between **columns** (horizontal, swipe on mobile) and **stacked** (vertical). Read-only, per-pane copy, selection + layout remembered.
+  - **Context window:** `[STATE]` notes no longer count against the history-depth budget — the window now keeps the last *N real turns* and lets notes ride along, so a run of "Applied:" notes can't push actual conversation out of context.
+  - **Polish:** Esc no longer exits fullscreen while a floating window (editor / worldbook manager / compare) is open — it closes that window first. Removed the superseded read-only worldbook text preview and fixed scrambled protocol-rule numbering.
+
 - **0.10.3** — fix fullscreen collapsing to content height (composer floated mid-screen with ST showing through below). The fullscreen panel now has an explicit height = 100dvh minus the top offset, so it spans from just below the ST toolbar to the screen bottom.
 
 - **0.10.2** — fullscreen now starts below the SillyTavern toolbar (concrete 56px offset, since Android WebView often reports safe-area insets as 0) so the panel header and its exit/close buttons are always fully visible and reachable.

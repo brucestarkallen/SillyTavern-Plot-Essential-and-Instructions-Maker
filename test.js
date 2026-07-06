@@ -254,4 +254,59 @@ setTimeout(() => {
     ok(legacy.history === undefined, 'flat history removed after migration');
     const mig = D.sess(legacy);
     ok(mig && mig.history.length === 3 && mig.history[1].swipes.length === 1 && mig.history[1].content === 'a1', 'all messages + swipes preserved', mig && mig.history.map(h => h.role));
+
+    // v0.11.0: numeric coercion — string-typed fields must survive, not reset
+    console.log('== numeric field coercion (the bug) ==');
+    ok(D.numOr('250', 100) === 250 && D.numOr(250, 100) === 250, 'numeric string and number both coerce');
+    ok(D.numOr('', 100) === 100 && D.numOr(null, 100) === 100 && D.numOr(undefined, 100) === 100, 'empty/null/undefined -> default');
+    ok(D.numOr('abc', 100) === 100 && D.numOr(true, 100) === 100 && D.numOr(NaN, 100) === 100, 'non-numeric -> default');
+    const coerced = D.parseWorldbook(JSON.stringify([
+        { name: 'Spine', keys: ['x'], content: 'c', strategy: 'blue', order: '300' },
+        { name: 'Siege', keys: ['s'], content: 'c', strategy: 'green', position: 'at_depth', depth: '2', order: '150' },
+        { name: 'Rumor', keys: ['r'], content: 'c', strategy: 'green', probability: '40' },
+    ]));
+    ok(coerced.entries[0].order === 300, 'string order "300" -> 300 (was silently 100)', coerced.entries[0].order);
+    ok(coerced.entries[1].depth === 2 && coerced.entries[1].order === 150, 'string depth/order coerced', { d: coerced.entries[1].depth, o: coerced.entries[1].order });
+    ok(coerced.entries[2].probability === 40, 'string probability "40" -> 40', coerced.entries[2].probability);
+
+    // v0.11.0: token budget estimation
+    console.log('== worldbook token stats ==');
+    ok(D.estTokens('') === 0 && D.estTokens('a') === 1, 'empty -> 0, tiny -> 1');
+    ok(D.estTokens('x'.repeat(400)) === 100, '400 chars ~ 100 tokens');
+    const tstats = D.worldbookTokenStats(D.parseWorldbook(JSON.stringify([
+        { name: 'A', keys: [], content: 'x'.repeat(400), strategy: 'blue' },
+        { name: 'B', keys: [], content: 'x'.repeat(400), strategy: 'blue' },
+        { name: 'C', keys: ['c'], content: 'x'.repeat(800), strategy: 'green' },
+    ])).entries);
+    ok(tstats.total === 400 && tstats.alwaysOn === 200 && tstats.blueCount === 2, 'total vs always-on(blue) subtotal split correctly', { total: tstats.total, on: tstats.alwaysOn, blue: tstats.blueCount });
+    ok(tstats.perEntry.length === 3 && tstats.perEntry[2].tokens === 200, 'per-entry token counts present');
+
+    // v0.11.0: canonical serializer round-trips losslessly through the parser
+    console.log('== worldbook serializer round-trip ==');
+    const srcEntries = D.parseWorldbook(JSON.stringify([
+        { name: 'Keeps everything', keys: ['a', 'b'], content: 'lore', strategy: 'green', order: 300, position: 'before_char' },
+        { name: 'At depth two', keys: ['d'], content: 'more', strategy: 'green', position: 'at_depth', depth: 2, probability: 40 },
+        { name: 'Plain default', keys: ['p'], content: 'plain', strategy: 'green' },
+        { name: 'Spine', keys: [], content: 'always', strategy: 'blue', order: 320 },
+    ])).entries;
+    const serialized = D.serializeWorldbook(srcEntries);
+    const reparsed = D.parseWorldbook(serialized).entries;
+    ok(!D.parseWorldbook(serialized).error && reparsed.length === 4, 'serialized output is valid JSON, 4 entries');
+    ok(reparsed[0].order === 300 && reparsed[0].position === 'before_char', 'non-default order/position preserved');
+    ok(reparsed[1].position === 'at_depth' && reparsed[1].depth === 2 && reparsed[1].probability === 40, 'at_depth + depth + probability preserved');
+    ok(reparsed[2].order === 100 && reparsed[2].position === 'after_char' && reparsed[2].probability === 100, 'defaults intact after round-trip');
+    ok(reparsed[3].strategy === 'blue' && reparsed[3].order === 320, 'blue strategy + order preserved');
+    // idempotent: serialize(parse(serialize(x))) === serialize(x)
+    ok(D.serializeWorldbook(reparsed) === serialized, 'serializer is idempotent');
+
+    // v0.11.0: context window keeps real turns, notes ride along
+    console.log('== context window (notes do not evict turns) ==');
+    const mkHist = [];
+    for (let i = 0; i < 10; i++) { mkHist.push({ role: 'user', content: 'u' + i }); mkHist.push({ role: 'assistant', content: 'a' + i }); mkHist.push({ role: 'note', content: 'applied' + i }); }
+    const win = D.pickContextWindow(mkHist, 4);
+    const realTurns = win.filter(h => h.role !== 'note').length;
+    ok(realTurns === 4, 'exactly `depth` real turns kept regardless of interleaved notes', realTurns);
+    ok(win[win.length - 1].role === 'note' && win.some(h => h.role === 'note'), 'notes within the window ride along');
+    const winSlice = D.pickContextWindow(mkHist, 2, 3);
+    ok(winSlice.every((h, i) => JSON.stringify(h) === JSON.stringify(mkHist.slice(0, 3)[i])), 'uptoIdx slices before that index (swipe path)');
 }, 10);
