@@ -309,4 +309,21 @@ setTimeout(() => {
     ok(win[win.length - 1].role === 'note' && win.some(h => h.role === 'note'), 'notes within the window ride along');
     const winSlice = D.pickContextWindow(mkHist, 2, 3);
     ok(winSlice.every((h, i) => JSON.stringify(h) === JSON.stringify(mkHist.slice(0, 3)[i])), 'uptoIdx slices before that index (swipe path)');
+
+    // v0.11.2: session context total (mirrors buildMessages assembly)
+    console.log('== session context breakdown ==');
+    const cdoc = { id: 'ctx1', name: 'Ctx Doc', text: ('hello world ').repeat(10).trim(), presetId: '', refs: [] };
+    D.ensureDocShape(cdoc);
+    const cs = D.sess(cdoc);
+    cs.history.push({ role: 'user', content: 'x'.repeat(40) }, { role: 'assistant', content: 'y'.repeat(80) }, { role: 'note', content: 'applied 2 edits' });
+    const cb = D.contextTokenBreakdown(cdoc);
+    const expDoc = D.estTokens('[DOCUMENT: ' + cdoc.name + ']\n' + cdoc.text + '\n[/DOCUMENT]');
+    const expHist = D.estTokens('x'.repeat(40)) + D.estTokens('y'.repeat(80)) + D.estTokens('[STATE] applied 2 edits');
+    ok(cb.doc === expDoc, 'document tokens match docBlock estimate', { got: cb.doc, exp: expDoc });
+    ok(cb.refsTotal === 0 && cb.refs.length === 0, 'no refs -> 0 ref tokens');
+    ok(cb.turns === 2 && cb.notes === 1, 'turn/note counts correct', { turns: cb.turns, notes: cb.notes });
+    ok(cb.history === expHist, 'history tokens match (notes prefixed [STATE], counted)', { got: cb.history, exp: expHist });
+    ok(cb.system > 0, 'system+protocol contributes tokens', cb.system);
+    ok(cb.total === cb.system + cb.doc + cb.refsTotal + cb.history, 'total = system + doc + refs + history', cb.total);
+    ok(D.contextTokenBreakdown(null).total === 0, 'null doc -> 0 total');
 }, 10);

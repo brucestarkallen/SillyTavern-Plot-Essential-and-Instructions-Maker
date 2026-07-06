@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "brucestarkallen",
-    "version": "0.11.1",
+    "version": "0.11.2",
     "homePage": "https://github.com/brucestarkallen/St-agent-maker-",
     "auto_update": false
 }

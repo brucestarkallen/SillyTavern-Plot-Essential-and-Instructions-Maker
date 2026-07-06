@@ -150,6 +150,8 @@ MIT.
 
 ## Changelog
 
+- **0.11.2** — live context meter. The panel header now shows the estimated total context this session sends on the next message (`~Nk ctx`) next to the char count — the sum of system prompt + edit protocol, the document, all 🔗 references (sent in full), and the windowed conversation history, computed to mirror exactly what gets sent. It updates live after every message, document/reference change, and history-depth change. Tap the header subtitle for a one-line breakdown (system / document / references / history, with per-reference token counts) so you can see where the budget is going — useful when references start to dominate. (Also: `settings` now initializes to a valid default at load instead of null, so pre-init access can't NPE.)
+
 - **0.11.1** — compare view now bridges to the agent. Compare (⚖) is a read-only viewer for *you* — it never fed anything to the agent, which surprised people who selected documents there expecting the agent to gain access. Each pane now has a **🔗 attach** toggle that attaches/detaches that document as a reference of the active doc (the active doc's own pane shows an "active" badge instead), and a permanent note spells out that Compare is view-only and that 🔗 is how you let the agent read a document. Attaching from Compare updates the panel's 🔗 count and reference bar live.
 
 - **0.11.0** — worldbook workbench + document compare.

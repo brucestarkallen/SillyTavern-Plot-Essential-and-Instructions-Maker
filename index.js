@@ -17,7 +17,7 @@
 
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.1';
+    const VERSION = '0.11.2';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -146,7 +146,10 @@
         presets: [],   // [{id, name, prompt}]
     };
 
-    let settings = null;
+    // Valid default object from load so pre-init access (and the node test
+    // harness, where init never runs) never hits a null; loadSettings()
+    // reassigns this to the ctx-backed, persisted object in production.
+    let settings = Object.assign({}, defaults, { docs: [], presets: defaultPresets() });
     let pendingEdits = [];   // [{type, find, replace, reason, docName, status, batch}]
     let editBatchSeq = 0;    // increments per accepted proposal block this session-view
     let editsCollapsed = false;
@@ -941,6 +944,27 @@
             msgs.push({ role: h.role === 'assistant' ? 'assistant' : 'user', content });
         });
         return msgs;
+    }
+
+    // Estimate the total context this session sends on the next message — exactly
+    // what buildMessages assembles: system prompt + edit protocol, the document,
+    // any 🔗 references (sent in full), and the windowed conversation history.
+    // Returns a breakdown so the readout can attribute where the tokens go.
+    function contextTokenBreakdown(doc) {
+        if (!doc) return { system: 0, doc: 0, refs: [], refsTotal: 0, history: 0, turns: 0, notes: 0, winLen: 0, total: 0 };
+        const preset = presetForDoc(doc);
+        const system = estTokens(String(preset?.prompt || '').trim() + '\n\n' + DOCEDITS_PROTOCOL);
+        const docTok = estTokens(docBlock(doc));
+        const refs = refsOf(doc).map(r => ({ name: r.name || 'Untitled', tokens: estTokens(refBlock(r)) }));
+        const refsTotal = refs.reduce((n, r) => n + r.tokens, 0);
+        const depth = Math.max(2, Number(settings.historyDepth) || 16);
+        const win = pickContextWindow(sess(doc).history, depth);
+        let history = 0, turns = 0, notes = 0;
+        for (const h of win) {
+            if (h.role === 'note') { history += estTokens('[STATE] ' + String(h.content ?? '')); notes++; }
+            else { history += estTokens(String(h.content ?? '')); turns++; }
+        }
+        return { system, doc: docTok, refs, refsTotal, history, turns, notes, winLen: win.length, total: system + docTok + refsTotal + history };
     }
 
     // ------------------------------------------------------------------
@@ -1890,6 +1914,8 @@
         el('la_retry').addEventListener('click', () => retryLast());
         el('la_dellast').addEventListener('click', () => deleteLastExchange());
         el('la_undo').addEventListener('click', () => undoLast());
+        const subEl = el('la_sub');
+        if (subEl) { subEl.style.cursor = 'pointer'; subEl.title = 'Tap for a context breakdown (system / document / references / history)'; subEl.addEventListener('click', () => showContextBreakdown()); }
         el('la_clear').addEventListener('click', () => clearConversation());
     }
 
@@ -1929,7 +1955,7 @@
 
         el('la_profile').addEventListener('change', () => { settings.profileId = el('la_profile').value; persist(); });
         el('la_maxtok').addEventListener('change', () => { settings.maxTokens = Math.min(200000, Math.max(256, Number(el('la_maxtok').value) || 4096)); el('la_maxtok').value = settings.maxTokens; persist(); });
-        el('la_depth').addEventListener('change', () => { settings.historyDepth = Math.max(2, Math.min(80, Number(el('la_depth').value) || 16)); el('la_depth').value = settings.historyDepth; persist(); });
+        el('la_depth').addEventListener('change', () => { settings.historyDepth = Math.max(2, Math.min(80, Number(el('la_depth').value) || 16)); el('la_depth').value = settings.historyDepth; persist(); updateSub(); });
         el('la_stream').addEventListener('change', () => { settings.streaming = el('la_stream').checked; persist(); });
         el('la_showthink').addEventListener('change', () => { settings.showThinking = el('la_showthink').checked; renderHistory(); persist(); });
         el('la_preset_prompt').addEventListener('input', () => {
@@ -2092,9 +2118,12 @@
         if (!sub) return;
         const doc = activeDoc();
         const refN = refsOf(doc).length;
-        sub.textContent = 'v' + VERSION + (doc
-            ? ' \u00B7 ' + oneLine(doc.name).slice(0, 24) + ' \u00B7 ' + (doc.text || '').length.toLocaleString() + ' chars' + (refN ? ' +' + refN + ' ref' + (refN > 1 ? 's' : '') : '')
-            : ' \u00B7 no document');
+        if (doc) {
+            const ctx = contextTokenBreakdown(doc).total;
+            sub.textContent = 'v' + VERSION + ' \u00B7 ' + oneLine(doc.name).slice(0, 24) + ' \u00B7 ' + (doc.text || '').length.toLocaleString() + ' chars' + (refN ? ' +' + refN + ' ref' + (refN > 1 ? 's' : '') : '') + ' \u00B7 ~' + kFmt(ctx) + ' ctx';
+        } else {
+            sub.textContent = 'v' + VERSION + ' \u00B7 no document';
+        }
     }
 
     function setBusy(b) {
@@ -3133,6 +3162,21 @@
     // layout toggle. Read-only, for drawing inspiration across drafts.
     // ------------------------------------------------------------------
 
+    function showContextBreakdown() {
+        const doc = activeDoc();
+        if (!doc) { toast('No document selected.', 'info'); return; }
+        const b = contextTokenBreakdown(doc);
+        const refPart = b.refs.length
+            ? '~' + kFmt(b.refsTotal) + ' (' + b.refs.map(r => oneLine(r.name).slice(0, 14) + ' ' + kFmt(r.tokens)).join(', ') + ')'
+            : 'none';
+        toast('Next-message context \u2248 ' + b.total.toLocaleString() + ' tok'
+            + '  \u00B7  system+protocol ~' + kFmt(b.system)
+            + '  \u00B7  document ~' + kFmt(b.doc)
+            + '  \u00B7  refs ' + refPart
+            + '  \u00B7  history ~' + kFmt(b.history) + ' (' + b.turns + ' turn' + (b.turns === 1 ? '' : 's') + (b.notes ? ' +' + b.notes + ' note' + (b.notes === 1 ? '' : 's') : '') + ')',
+            'info');
+    }
+
     function showCompare() {
         if (!settings.docs.length) { toast('No documents to compare yet.', 'warning'); return; }
         const win = floatWindow('la_compare', { title: '\u2696 Compare documents', height: '82vh' });
@@ -3276,7 +3320,7 @@
             normChars, levenshtein, locate, applyEditToText, grow, mimeForName, resolveDocByName,
             ensureDocShape, sess, parseWorldbook, lintWorldbook, worldbookToST, docLooksLikeWorldbook,
             normalizePosition, positionToST,
-            numOr, estTokens, worldbookTokenStats, serializeWorldbook, pickContextWindow,
+            numOr, estTokens, worldbookTokenStats, serializeWorldbook, pickContextWindow, contextTokenBreakdown,
         };
     } catch (e) { /* ignore */ }
 })();
