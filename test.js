@@ -429,3 +429,8 @@ const gp = D.parseDocEdits('<docedits>[{"find":"a","replace":"b","all":true,"rea
 ok(gp.edits.length === 1 && gp.edits[0].all === true, 'parser preserves the all flag', gp.edits[0]);
 const gp2 = D.parseDocEdits('<docedits>[{"find":"a","replace":"b","reason":"r"}]</docedits>');
 ok(gp2.edits[0].all === false, 'no flag -> all:false (single occurrence)', gp2.edits[0]);
+// v0.11.17: pending-proposals block labels an all-edit as a global replace
+console.log('== pending block: global-replace label ==');
+const ppAllEdit = D.formatPendingProposals([{ status: 'pending', type: 'replace', all: true, reason: 'rename everywhere' }]);
+ok(/Edit 1 \(global replace \(every occurrence\)\): rename everywhere/.test(ppAllEdit), 'all-edit labeled as global replace in the block the agent reads', ppAllEdit);
+ok(/Edit 1 \(replace\):/.test(D.formatPendingProposals([{ status: 'pending', type: 'replace', reason: 'x' }])), 'a normal replace is still labeled "replace"');

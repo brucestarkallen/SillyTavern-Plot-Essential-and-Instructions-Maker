@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.16';
+    const VERSION = '0.11.17';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -1086,7 +1086,7 @@
         (edits || []).forEach((e, i) => {
             if (!e || e.status !== 'pending') return;
             const tgt = e.docName ? ' \u2192 ' + e.docName : '';
-            const kind = e.type === 'replace_all' ? 'full rewrite' : e.type === 'append' ? 'append' : e.type === 'insert' ? 'insert after' : 'replace';
+            const kind = e.type === 'replace_all' ? 'full rewrite' : e.type === 'append' ? 'append' : e.type === 'insert' ? 'insert after' : (e.all ? 'global replace (every occurrence)' : 'replace');
             lines.push('Edit ' + (i + 1) + ' (' + kind + tgt + '): ' + oneLine(e.reason || '(no reason given)').slice(0, 160));
         });
         if (!lines.length) return '';

@@ -156,6 +156,8 @@ MIT.
 
 ## Changelog
 
+- **0.11.17** — deep final audit, no bugs found. The core paths (apply engine, matcher, generation reply-processing, document routing) are all sound; verified with 170 engine tests + 88 DOM integration checks, no undefined function references, no XSS surface, and version/data-key intact. One minor polish: the pending-proposals list the agent reads now labels a global-replace edit as "global replace (every occurrence)" rather than a plain "replace," so it understands the scope of its own pending edits.
+
 - **0.11.16** — new **global replace**: add `"all": true` to a find/replace edit and it replaces **every exact occurrence** across the document in one shot (a rename, or a recurring fix) — the agent's answer to editing something everywhere without rewriting the whole file. It's **literal exact-match only** on purpose, which makes it foolproof: it touches only real occurrences, never a fuzzy guess, and if the quoted text isn't present it fails cleanly and leaves the document untouched. Fully undoable, and the card shows how many occurrences changed. (Comparison note: this is the document analog of ST-Copilot's cross-message bulk replace; the agent's whole-document rewrite `replace_all` was already as safe as Copilot's overwrite because the agent always sends the full document — it never rewrites from a preview, so it can't reconstruct blindly.)
 
 - **0.11.15** — final-audit fix: the Escape key now correctly closes the 🔍 Check window without also exiting fullscreen (its window id wasn't in the float-window guard). Full audit otherwise clean: 161 engine tests + 80 DOM integration checks pass, every element ID resolves, no XSS surface, version/data-key intact.
