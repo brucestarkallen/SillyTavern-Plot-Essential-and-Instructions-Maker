@@ -6,6 +6,10 @@ You (an AI model) are continuing development of **Plot Essential and Instruction
 
 A floating chat panel where the user talks to an LLM about a plain-text/markdown document, and the LLM edits the document via a strict protocol — one `<docedits>` JSON block per reply (find/replace, insert_after, append, replace_all, optional `"doc"` to target an attached reference document). Edits render as red/green diff cards the user approves; applies are undoable. Documents, presets, sessions, and undo stacks all live in `SillyTavern.getContext().extensionSettings.loreAgent` — **never** in chat or chatMetadata; the extension must work with no character/chat loaded.
 
+## Deterministic document linter (v0.11.14)
+
+`docLint(text)` scans the RAW document in code (no LLM) for inline double-spaces (runs of 2+ spaces between non-space chars, NOT leading indentation), trailing whitespace, tabs, and JSON validity; `collapseInlineSpaces` and `repairDocJson` (reuses `escapeRawControlsInStrings`) are the undoable fixes. `showDocLint` (the 🔍 Check button; floatWindow id `la_lintwin` — deliberately distinct from the `la_lint` button id, since floatWindow keys on element id) renders the report with spaces drawn as · and applies fixes via `commitDocChanges`. Rationale: LLMs cannot reliably perceive whitespace, so whitespace/JSON checks must be deterministic and never delegated to the model. All three functions are exported + test-covered.
+
 ## Internal naming — never change
 
 The display name is **Plot Essential and Instructions Maker** (`manifest.display_name`). The **internal module id is `loreAgent`**, load-bearing in three places: the `extensionSettings.loreAgent` storage key (every saved document + preset lives here), the console `LOG` prefix `[LoreAgent]`, and the `globalThis.__loreAgentDebug` test/console export. Do **not** rename any of these — changing the storage key orphans all real user data, and the test suite + jsdom audit harness bind to `__loreAgentDebug`. The `la_` element-id prefix, `PRESET_WB_ID` (`seed_worldbook_maker`), and internal function names are likewise historical and stay. A rename touches display strings only.
