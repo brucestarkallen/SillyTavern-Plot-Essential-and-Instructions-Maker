@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.12';
+    const VERSION = '0.11.13';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -670,13 +670,16 @@
         if (best && best.sim >= 0.78) {
             const st = tokens[best.s];
             const en = tokens[best.s + best.w - 1];
-            // A fuzzy match is SAFE to apply only if its first and last words match the
-            // needle's exactly: then the replaced span begins and ends on those exact
-            // words, so nothing is left behind (no duplicated fragment) and no adjacent
-            // line is reflowed. This still lets whitespace-only differences through
-            // (identical words, different spacing) while refusing paraphrases whose
-            // edges drift. applyEditToText refuses unsafe fuzzy matches.
-            const safe = hayWords[best.s] === needleWords[0] && hayWords[best.s + best.w - 1] === needleWords[nw - 1];
+            // A fuzzy match is SAFE to apply only when it differs from the quote by
+            // WHITESPACE alone (after quote/dash normalization) — identical words in the
+            // same order, just different spacing. Then applying the replacement cannot
+            // change anything the model did not intend. Any word or punctuation
+            // difference means the model misquoted the real text, so it is refused
+            // (applyEditToText fails it and the agent re-quotes) rather than writing an
+            // inexact version over the document. This keeps whitespace fixes working
+            // while never applying an approximate ("83%") guess to an authored file.
+            const nWS = (x) => x.replace(/\s+/g, ' ').trim();
+            const safe = nWS(hay2.slice(st.index, en.index + en[0].length)) === nWS(needle2);
             return { start: st.index, end: en.index + en[0].length, fuzzy: true, safe, sim: best.sim, count: 1 };
         }
         return null;
@@ -713,7 +716,7 @@
         if (!loc || (loc.fuzzy && !loc.safe)) {
             const what = edit.type === 'insert' ? 'insert_after anchor' : '"find" text';
             return { ok: false, reason: (loc && loc.fuzzy)
-                ? what + ' matched approximately (' + Math.round(loc.sim * 100) + '%) but its start/end words differ from the document, so it was not applied (that could duplicate or reflow text). Copy it character-for-character from the current [DOCUMENT] and resend.'
+                ? what + ' matched approximately (' + Math.round(loc.sim * 100) + '%) but not word-for-word — only a pure whitespace difference is auto-applied, so an approximate/misquoted match is refused rather than written over the real text. Copy it character-for-character from the current [DOCUMENT] and resend.'
                 : what + ' not located — copy it character-for-character from the current [DOCUMENT] and resend.' };
         }
         let note = loc.fuzzy ? (loc.sim >= 0.995 ? ' (spacing normalized)' : ' (fuzzy ' + Math.round(loc.sim * 100) + '%)') : '';

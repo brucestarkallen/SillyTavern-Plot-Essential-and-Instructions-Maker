@@ -123,6 +123,12 @@ ok((wsHit.text.match(/NPCs/g) || []).length === 1, 'edge-safe apply leaves no du
 const driftDoc = 'alpha bravo charlie delta echo';
 const drift = D.applyEditToText(driftDoc, { type: 'replace', find: 'alpha bravo charlie foxtrot', replace: 'Z', reason: '' });
 ok(drift.ok === false, 'edge-drifting fuzzy (last word differs) is still refused', drift.reason);
+// v0.11.13: edges match but a MIDDLE word differs -> refused (edge-safe alone would have
+// applied it, overwriting real text with the model's misquote — bad for an authored file)
+const midDoc = 'set the rank to Two-fourteen right now';
+const midEdit = D.applyEditToText(midDoc, { type: 'replace', find: 'set the rank to Two-thirty-eight right now', replace: 'set the rank to 238 right now', reason: '' });
+ok(midEdit.ok === false, 'edges match but a middle word differs -> refused (only whitespace-only diffs auto-apply)', midEdit.reason);
+ok(midDoc.includes('Two-fourteen'), 'real text left untouched (not overwritten by an ~85% guess)', midDoc);
 
 console.log('== grow (stream accumulator) ==');
 ok(D.grow('', 'Hel') === 'Hel' && D.grow('Hel', 'Hello') === 'Hello' && D.grow('Hello', ' wor') === 'Hello wor', 'cumulative and delta chunks both accumulate');
