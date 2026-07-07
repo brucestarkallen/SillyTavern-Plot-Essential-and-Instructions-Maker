@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.14';
+    const VERSION = '0.11.15';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -2936,7 +2936,7 @@
     // ------------------------------------------------------------------
 
     function anyFloatWinOpen() {
-        for (const id of ['la_viewer_win', 'la_wbman', 'la_compare']) {
+        for (const id of ['la_viewer_win', 'la_wbman', 'la_compare', 'la_lintwin']) {
             const w = el(id);
             if (w && w.style.display !== 'none') return true;
         }

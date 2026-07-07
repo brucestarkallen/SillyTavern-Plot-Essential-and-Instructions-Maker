@@ -156,6 +156,8 @@ MIT.
 
 ## Changelog
 
+- **0.11.15** — final-audit fix: the Escape key now correctly closes the 🔍 Check window without also exiting fullscreen (its window id wasn't in the float-window guard). Full audit otherwise clean: 161 engine tests + 80 DOM integration checks pass, every element ID resolves, no XSS surface, version/data-key intact.
+
 - **0.11.14** — new **🔍 Check** button (DOC row): a deterministic linter that reads the raw document *in code*, not via the AI, so it can't hallucinate. It reports inline double-spaces (drawn with visible · dots so you can actually see them), trailing whitespace, tabs, and JSON validity — and offers one-tap **undoable** fixes: collapse double-spaces, and repair invalid JSON (escapes raw line breaks, keeps the content). This is the reliable way to settle "is that two spaces or one?" and to catch the JSON format errors a model misses — language models genuinely can't perceive whitespace, so that check belongs in code, not in the chat.
 
 - **0.11.13** — tightened the fuzzy-apply rule to be exactly right for authored files. v0.11.12 applied a match when its first/last words lined up, which let an ~83% match through — and since the matcher ignores spacing, an 83% score means ~17% of the *words* differed, so applying it could quietly overwrite real text with the model's misquote. Now a fuzzy match applies **only when the difference is pure whitespace** (the words are provably identical, just re-spaced); any word or punctuation difference is refused and the agent re-quotes verbatim. Whitespace/double-space fixes still apply cleanly; a misquote can no longer be written over your instructions.
