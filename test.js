@@ -414,3 +414,18 @@ ok(D.collapseInlineSpaces('line one\nline  two') === 'line one\nline two', 'per-
 const lintRjRes = D.repairDocJson('{"a": "x\ny"}');
 ok(lintRjRes.changed && JSON.parse(lintRjRes.text).a === 'x\ny', 'repairDocJson escapes raw newline -> valid, content preserved', lintRjRes);
 ok(D.repairDocJson('{"a":1}').changed === false, 'valid JSON unchanged by repair');
+// v0.11.16: global literal replace ("all": true) — every exact occurrence, foolproof
+console.log('== global literal replace (all:true) ==');
+const gGDoc = 'X marks the X. Find the other X here.';
+const gAll = D.applyEditToText(gGDoc, { type: 'replace', find: 'X', replace: 'Y', all: true, reason: '' });
+ok(gAll.ok && gAll.text === 'Y marks the Y. Find the other Y here.', 'all:true replaces EVERY exact occurrence', gAll.text);
+ok(/replaced 3 occurrence/.test(gAll.note || ''), 'note reports the occurrence count', gAll.note);
+const gMiss = D.applyEditToText(gGDoc, { type: 'replace', find: 'Z', replace: 'W', all: true, reason: '' });
+ok(gMiss.ok === false, 'all:true is literal exact — a find not present fails cleanly (no corruption)', gMiss.reason);
+ok(gGDoc.indexOf('X') !== -1, 'document untouched on a failed global replace');
+const gOne = D.applyEditToText(gGDoc, { type: 'replace', find: 'X', replace: 'FIRST', reason: '' });
+ok(gOne.ok && gOne.text.indexOf('FIRST') === 0 && (gOne.text.match(/X/g) || []).length === 2, 'WITHOUT all: only the first occurrence changes (unchanged behavior)', gOne.text);
+const gp = D.parseDocEdits('<docedits>[{"find":"a","replace":"b","all":true,"reason":"r"}]</docedits>');
+ok(gp.edits.length === 1 && gp.edits[0].all === true, 'parser preserves the all flag', gp.edits[0]);
+const gp2 = D.parseDocEdits('<docedits>[{"find":"a","replace":"b","reason":"r"}]</docedits>');
+ok(gp2.edits[0].all === false, 'no flag -> all:false (single occurrence)', gp2.edits[0]);

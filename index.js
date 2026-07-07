@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.15';
+    const VERSION = '0.11.16';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -117,14 +117,15 @@
         '  {"insert_after": "verbatim anchor line copied from the document", "replace": "new paragraph placed on a new line under the anchor line", "reason": "short why"},',
         '  {"append": true, "replace": "text added at the end of the document", "reason": "short why"},',
         '  {"doc": "Name Of A Reference Document", "find": "verbatim excerpt from that reference document", "replace": "new text", "reason": "the doc field targets a reference document"},',
-        '  {"replace_all": true, "replace": "entire new document text", "reason": "only when the user explicitly asked for a full rewrite"}',
+        '  {"replace_all": true, "replace": "entire new document text", "reason": "only when the user explicitly asked for a full rewrite"},',
+        '  {"find": "exact string that repeats", "replace": "new text", "all": true, "reason": "replace EVERY exact occurrence in the document — a rename or recurring fix"}',
         ']',
         '</docedits>',
         '',
         'Rules:',
         '1. "find" and "insert_after" must be copied CHARACTER-FOR-CHARACTER from the current [DOCUMENT]: same wording, punctuation, capitalization, spacing and line breaks (write line breaks as \\n). Never paraphrase, trim, or fix typos inside them.',
         '2. Keep "find" as short as possible while staying unique in the document (one line up to a few lines). If the excerpt appears more than once, extend it until it is unique.',
-        '3. Prefer several small surgical edits over one big rewrite. Use "append" for new sections at the end of the document. Use "insert_after" to add content below an existing line: its "replace" text is placed starting on a new line directly under the anchor line — put a leading \\n inside "replace" if you want a blank line between them. Use "replace_all" ONLY when the user explicitly requests a full rewrite of the whole document.',
+        '3. Prefer several small surgical edits over one big rewrite. Use "append" for new sections at the end of the document. Use "insert_after" to add content below an existing line: its "replace" text is placed starting on a new line directly under the anchor line — put a leading \\n inside "replace" if you want a blank line between them. Use "replace_all" ONLY when the user explicitly requests a full rewrite of the whole document. To replace EVERY exact occurrence of a string across the document (a rename, or a recurring fix), add "all": true to a find/replace edit — it is a literal exact replace, so copy the "find" exactly; it touches only real occurrences.',
         '4. The block must be valid JSON: property strings in double quotes; write EVERY line break inside a value as \\n (never a real line break); if a value must contain a quotation mark use single quotes or escape it as \\", never a raw double quote inside the value; no comments, no trailing commas, no markdown fences.',
         '5. At most ONE docedits block per reply, placed at the very END of the reply, after a brief prose explanation of what you changed and why. If nothing needs changing, output no block at all.',
         '6. In prose, refer to the mechanism as the "docedits block" in plain words. The literal angle-bracket tag must appear ONLY around the actual JSON block, never inside explanations.',
@@ -583,7 +584,7 @@
             if (e.replace_all === true) { edits.push({ type: 'replace_all', find: null, replace, reason, docName, status: 'pending' }); continue; }
             if (e.append === true) { edits.push({ type: 'append', find: null, replace, reason, docName, status: 'pending' }); continue; }
             if (typeof e.insert_after === 'string' && e.insert_after.length) { edits.push({ type: 'insert', find: e.insert_after, replace, reason, docName, status: 'pending' }); continue; }
-            if (typeof e.find === 'string' && e.find.length) { edits.push({ type: 'replace', find: e.find, replace, reason, docName, status: 'pending' }); continue; }
+            if (typeof e.find === 'string' && e.find.length) { edits.push({ type: 'replace', find: e.find, replace, reason, docName, status: 'pending', all: e.all === true }); continue; }
             // Unknown shape — skip silently rather than crash or half-apply.
         }
         return { edits };
@@ -772,6 +773,18 @@
 
         const needle = String(edit.find || '');
         if (!needle) return { ok: false, reason: 'missing find/anchor text' };
+        // Global literal replace ("all": true): replace EVERY exact occurrence. Literal
+        // only (no fuzzy) so it is foolproof — it touches only real occurrences, never a
+        // fuzzy guess. Ideal for renames / recurring fixes across a large document
+        // without rewriting the whole thing.
+        if (edit.all && edit.type === 'replace') {
+            if (text.indexOf(needle) === -1) return { ok: false, reason: '"find" not found for global replace (exact match required) — copy it character-for-character from the current [DOCUMENT] and resend.' };
+            const parts = text.split(needle);
+            const count = parts.length - 1;
+            const next = parts.join(rep);
+            if (next === text) return { ok: false, reason: 'no change produced' };
+            return { ok: true, text: next, note: ' (replaced ' + count + ' occurrence' + (count > 1 ? 's' : '') + ')' };
+        }
         const loc = locate(text, needle);
         // Exact / quote-normalized matches always apply (precise character boundaries).
         // A FUZZY match applies only when it is edge-safe (loc.safe: first & last words
@@ -2474,6 +2487,7 @@
         if (edit.type === 'replace_all') return '\uD83E\uDDE8 Replace ALL';
         if (edit.type === 'append') return '\u2795 Append';
         if (edit.type === 'insert') return '\u2935 Insert after';
+        if (edit.all) return '\u270F Replace every match';
         return '\u270F Replace';
     }
 
