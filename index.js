@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.13';
+    const VERSION = '0.11.14';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -483,6 +483,72 @@
             out += c;
         }
         return out;
+    }
+
+    // Deterministic document linter — reads the RAW text (no LLM guessing) and reports
+    // inline double-spaces (shown with visible middle-dots), trailing whitespace, tabs,
+    // and JSON validity. Settles "is that two spaces or one?" authoritatively, and
+    // catches the JSON format errors an LLM misses.
+    function docLint(text) {
+        text = String(text ?? '');
+        const out = { inlineDoubleSpaces: [], inlineCount: 0, trailingWs: 0, tabs: 0, crlf: text.indexOf('\r\n') !== -1, jsonLike: false, jsonValid: null, jsonError: '', jsonFixable: false };
+        const lines = text.split('\n');
+        lines.forEach((line, li) => {
+            if (/[ \t]+$/.test(line)) out.trailingWs++;
+            out.tabs += (line.match(/\t/g) || []).length;
+            const fns = line.search(/\S/);
+            if (fns >= 0) {
+                const body = line.slice(fns);
+                body.replace(/ {2,}/g, (run, offset) => {
+                    const before = body[offset - 1], after = body[offset + run.length];
+                    if (before && before !== ' ' && after && after !== ' ') {
+                        out.inlineCount++;
+                        if (out.inlineDoubleSpaces.length < 25) {
+                            const a = Math.max(0, offset - 14), b = Math.min(body.length, offset + run.length + 14);
+                            out.inlineDoubleSpaces.push({ line: li + 1, spaces: run.length, sample: body.slice(a, b).replace(/ /g, '\u00B7') });
+                        }
+                    }
+                    return run;
+                });
+            }
+        });
+        const t = text.trim();
+        if (t.charAt(0) === '{' || t.charAt(0) === '[') {
+            out.jsonLike = true;
+            try { JSON.parse(text); out.jsonValid = true; }
+            catch (e) {
+                out.jsonValid = false; out.jsonError = String((e && e.message) || e);
+                try { JSON.parse(escapeRawControlsInStrings(text.replace(/,\s*([\]}])/g, '$1'))); out.jsonFixable = true; }
+                catch (e2) { out.jsonFixable = false; }
+            }
+        }
+        return out;
+    }
+
+    // Collapse runs of 2+ spaces that sit BETWEEN non-space chars (inline artifacts),
+    // preserving leading indentation, blank lines, and trailing spaces.
+    function collapseInlineSpaces(text) {
+        return String(text ?? '').split('\n').map(line => {
+            const fns = line.search(/\S/);
+            if (fns < 0) return line;
+            const indent = line.slice(0, fns);
+            const body = line.slice(fns).replace(/ {2,}/g, (run, offset, str) => {
+                const before = str[offset - 1], after = str[offset + run.length];
+                return (before && before !== ' ' && after && after !== ' ') ? ' ' : run;
+            });
+            return indent + body;
+        }).join('\n');
+    }
+
+    // Make an invalid JSON document parseable by escaping raw control chars inside
+    // strings and dropping trailing commas. Returns unchanged text if already valid or
+    // not repairable. Content is preserved (escaped \n parses back to a real newline).
+    function repairDocJson(text) {
+        text = String(text ?? '');
+        try { JSON.parse(text); return { changed: false, text }; } catch (e) { /* repair below */ }
+        const fixed = escapeRawControlsInStrings(text.replace(/,\s*([\]}])/g, '$1'));
+        try { JSON.parse(fixed); return { changed: fixed !== text, text: fixed }; }
+        catch (e) { return { changed: false, text, error: String((e && e.message) || e) }; }
     }
 
     function parseDocEdits(text) {
@@ -1930,6 +1996,7 @@
             '      <button class="la_btn" id="la_exp" title="Export: download with a chosen filename/extension">Exp</button>',
             '      <button class="la_btn" id="la_wbexp" title="Export as SillyTavern World Info (.json) \u2014 for worldbook documents">\uD83C\uDF10\u2192ST</button>',
             '      <button class="la_btn" id="la_dcopy" title="Copy the whole document to the clipboard">\uD83D\uDCCB</button>',
+            '      <button class="la_btn" id="la_lint" title="Check the raw text deterministically: double-spaces, trailing whitespace, JSON validity (in code, not via the AI)">\uD83D\uDD0D Check</button>',
             '    </div>',
             '    <div class="la_dbrow la_grp">',
             '      <span class="la_grplbl" title="Session actions">Sess</span>',
@@ -2030,6 +2097,7 @@
         el('la_exp').addEventListener('click', () => exportDoc());
         el('la_wbexp').addEventListener('click', () => exportWorldbookST());
         el('la_dcopy').addEventListener('click', () => copyDoc());
+        el('la_lint').addEventListener('click', () => showDocLint());
         el('la_view').addEventListener('click', () => viewDoc());
         el('la_cmp').addEventListener('click', () => showCompare());
         el('la_retry').addEventListener('click', () => retryLast());
@@ -2973,6 +3041,59 @@
     // Opened by View on a worldbook document instead of the text preview.
     // ------------------------------------------------------------------
 
+    // Deterministic "Check" window: shows exactly what the raw text contains (double
+    // spaces with visible dots, trailing whitespace, JSON validity) so the user never
+    // has to rely on the model's unreliable whitespace perception, plus undoable fixes.
+    function showDocLint() {
+        const doc = activeDoc();
+        if (!doc) { toast('No document selected.', 'warning'); return; }
+        const win = floatWindow('la_lintwin', { title: '\uD83D\uDD0D Check \u2014 ' + doc.name, height: '78vh' });
+        const body = win.body;
+        body.innerHTML = '';
+        const rpt = docLint(doc.text || '');
+        const mk = (tag, css, txt) => { const e = document.createElement(tag); if (css) e.style.cssText = css; if (txt != null) e.textContent = txt; return e; };
+        const row = (txt, good) => { const d = mk('div', 'padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.08);'); const b = mk('span', 'font-weight:700;color:' + (good ? '#7fce8b' : '#e6a94a') + ';', good ? '\u2713 ' : '\u26A0 '); d.appendChild(b); d.appendChild(document.createTextNode(txt)); return d; };
+
+        body.appendChild(mk('div', 'opacity:0.7;font-size:0.85em;margin-bottom:10px;', 'Deterministic scan of the raw text \u2014 not the model. Spaces are drawn as \u00B7 so you can actually see them.'));
+
+        if (rpt.inlineCount === 0) body.appendChild(row('No inline double-spaces.', true));
+        else {
+            body.appendChild(row(rpt.inlineCount + ' inline double-space' + (rpt.inlineCount > 1 ? 's' : '') + ':', false));
+            const list = mk('div', 'font-family:monospace;font-size:0.82em;margin:4px 0 10px 14px;');
+            rpt.inlineDoubleSpaces.forEach(h => list.appendChild(mk('div', 'padding:2px 0;opacity:0.85;', 'line ' + h.line + ':  \u2026' + h.sample + '\u2026')));
+            if (rpt.inlineCount > rpt.inlineDoubleSpaces.length) list.appendChild(mk('div', 'opacity:0.6;', '\u2026and ' + (rpt.inlineCount - rpt.inlineDoubleSpaces.length) + ' more.'));
+            body.appendChild(list);
+        }
+        body.appendChild(row(rpt.trailingWs ? rpt.trailingWs + ' line(s) with trailing whitespace.' : 'No trailing whitespace.', rpt.trailingWs === 0));
+        if (rpt.tabs) body.appendChild(row(rpt.tabs + ' tab character(s).', false));
+        if (rpt.crlf) body.appendChild(row('Windows (CRLF) line endings present.', false));
+
+        if (rpt.jsonLike) {
+            if (rpt.jsonValid) body.appendChild(row('Valid JSON.', true));
+            else {
+                body.appendChild(row('INVALID JSON: ' + rpt.jsonError, false));
+                body.appendChild(mk('div', 'opacity:0.75;font-size:0.85em;margin:2px 0 6px 14px;', rpt.jsonFixable ? 'Auto-fixable (escape raw line breaks / drop trailing commas).' : 'Not auto-fixable \u2014 likely an unescaped double-quote inside a value; open View to fix it by hand near the reported position.'));
+            }
+        } else body.appendChild(mk('div', 'opacity:0.55;font-size:0.85em;padding:6px 0;', 'Not a JSON document \u2014 JSON check skipped.'));
+
+        const btnRow = mk('div', 'display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;');
+        const mkBtn = (label, bg, fn) => { const b = mk('button', 'cursor:pointer;border:1px solid rgba(255,255,255,0.3);background:' + bg + ';color:inherit;border-radius:8px;padding:10px 14px;font-size:0.9em;', label); b.addEventListener('click', fn); return b; };
+        if (rpt.inlineCount > 0) btnRow.appendChild(mkBtn('Collapse ' + rpt.inlineCount + ' double-space' + (rpt.inlineCount > 1 ? 's' : ''), 'rgba(90,150,220,0.3)', () => {
+            const d = activeDoc(); if (!d) return;
+            commitDocChanges([{ doc: d, before: d.text, after: collapseInlineSpaces(d.text) }], 'Collapsed inline double-spaces');
+            toast('Collapsed double-spaces (undoable).', 'success'); showDocLint();
+        }));
+        if (rpt.jsonLike && rpt.jsonValid === false && rpt.jsonFixable) btnRow.appendChild(mkBtn('Repair JSON', 'rgba(90,200,120,0.3)', () => {
+            const d = activeDoc(); if (!d) return;
+            const r = repairDocJson(d.text);
+            if (!r.changed) { toast('Could not repair automatically.', 'warning'); return; }
+            commitDocChanges([{ doc: d, before: d.text, after: r.text }], 'Repaired JSON format');
+            toast('JSON repaired (undoable).', 'success'); showDocLint();
+        }));
+        btnRow.appendChild(mkBtn('Re-scan', 'rgba(255,255,255,0.12)', () => showDocLint()));
+        body.appendChild(btnRow);
+    }
+
     function showWorldbookManager(docId) {
         const doc0 = settings.docs.find(d => d.id === docId) || activeDoc();
         if (!doc0) { toast('No document selected.', 'warning'); return; }
@@ -3444,6 +3565,7 @@
             normalizePosition, positionToST,
             numOr, estTokens, worldbookTokenStats, serializeWorldbook, pickContextWindow, contextTokenBreakdown,
             parseSupersede, formatPendingProposals,
+            docLint, collapseInlineSpaces, repairDocJson,
             getSettings: () => settings,
             getPendingEdits: () => pendingEdits,
         };

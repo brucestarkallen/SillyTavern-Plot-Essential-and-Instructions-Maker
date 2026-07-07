@@ -394,3 +394,23 @@ setTimeout(() => {
     ok(!/supersede/i.test(D.stripBlocks('hello <supersede>1</supersede> world')), 'stripBlocks removes the supersede tag from display');
     ok(/proposed edits below/.test(D.stripBlocks('foo\n<docedits>\n[]\n</docedits>')), 'stripBlocks still collapses docedits');
 }, 10);
+
+// v0.11.14: deterministic document linter (whitespace + JSON) — no LLM guessing
+console.log('== docLint (deterministic) ==');
+ok(D.docLint('line one\nline two with words\n    indented ok').inlineCount === 0, 'clean text -> 0 inline double-spaces');
+const lintDblRes = D.docLint('has  two spaces\nand   three there');
+ok(lintDblRes.inlineCount === 2, 'finds 2 inline double-space runs', lintDblRes.inlineCount);
+ok(lintDblRes.inlineDoubleSpaces[0].sample.indexOf('\u00B7\u00B7') !== -1, 'sample shows spaces as middle-dots (visible)', lintDblRes.inlineDoubleSpaces[0]);
+ok(D.docLint('        leading indent only').inlineCount === 0, 'leading indentation NOT flagged as inline double-space');
+ok(D.docLint('trailing here  \nok').trailingWs === 1, 'trailing whitespace counted');
+ok(D.docLint('{"a":1}').jsonValid === true, 'valid JSON detected');
+const lintBadJsonRes = D.docLint('{"a": "line one\nline two"}');
+ok(lintBadJsonRes.jsonLike && lintBadJsonRes.jsonValid === false && lintBadJsonRes.jsonFixable, 'invalid JSON (raw newline) detected + fixable', lintBadJsonRes);
+ok(D.docLint('just prose, not json').jsonLike === false, 'non-JSON is not JSON-checked');
+console.log('== collapseInlineSpaces + repairDocJson ==');
+ok(D.collapseInlineSpaces('a  b   c') === 'a b c', 'collapses inline runs to single space');
+ok(D.collapseInlineSpaces('        keep indent  then one') === '        keep indent then one', 'preserves leading indent, collapses inline');
+ok(D.collapseInlineSpaces('line one\nline  two') === 'line one\nline two', 'per-line, preserves newlines');
+const lintRjRes = D.repairDocJson('{"a": "x\ny"}');
+ok(lintRjRes.changed && JSON.parse(lintRjRes.text).a === 'x\ny', 'repairDocJson escapes raw newline -> valid, content preserved', lintRjRes);
+ok(D.repairDocJson('{"a":1}').changed === false, 'valid JSON unchanged by repair');
