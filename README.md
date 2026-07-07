@@ -156,6 +156,8 @@ MIT.
 
 ## Changelog
 
+- **0.11.9** — when a proposed edit can't locate its excerpt, the failure is now fed back to the agent (a note it reads on the next turn) telling it to copy the excerpt character-for-character and resend — so it self-corrects instead of the failure sitting silently on a card. Matching stays **strict on purpose**: the agent edits your authored documents, and a looser fuzzy match on long text risks silently replacing the *wrong* passage, which is worse than a clean, recoverable failure. (This is why the agent does not adopt Chat Assistant's looser-threshold change — that was tuned for short structured memory, not long documents.)
+
 - **0.11.8** — fixed a nested-scroll trap in the proposed-edit cards. The per-block scroll boxes added in 0.11.7 captured touch on mobile, so you couldn't drag past a card to reach the green "after" block. Removed them: the red "before" is now a short clipped preview (you can see the current text in the document / View editor) and the green "after" (the new text) flows in **full**, with the whole cards area as one smooth scroll — so even with a long reason and several stacked fixes, you can drag the cards region and read every green block.
 
 - **0.11.7** — edit-cards area given more height (42% → 55%) so a tall proposal card no longer pushes the green "after" block below the fold. (The related Chat Assistant memory-path bug does not apply here: the agent edits document *text* via find/replace, not structured memory with paths/arrays, so there is no "unknown path" failure mode. Individual diff blocks are already capped with their own scroll, so a long "before" can't bury the green.)

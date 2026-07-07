@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.8';
+    const VERSION = '0.11.9';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -721,6 +721,8 @@
             }
         }
         const changed = [...work.values()].filter(w => w.count > 0);
+        const failed = todo.filter(e => String(e.status || '').startsWith('failed'));
+        let appliedNote = '';
         if (changed.length) {
             const batchId = uid();
             for (const w of changed) {
@@ -731,13 +733,27 @@
             if (!Array.isArray(settings.batchLog)) settings.batchLog = [];
             settings.batchLog.push(batchId);
             while (settings.batchLog.length > 8) settings.batchLog.shift();
+            appliedNote = 'Applied: ' + changed.map(w => w.count + ' edit(s) \u2192 "' + w.doc.name + '"').join(', ') + '.';
+            pushHistory(main, 'note', appliedNote);
+        }
+        if (failed.length) {
+            // Feed the miss back to the agent as a [STATE] note it sees next turn, so it
+            // re-quotes the excerpt verbatim instead of the failure sitting silently on a
+            // card. Matching stays STRICT (no threshold loosening) — a loose match on a long
+            // authored document could replace the wrong passage and corrupt it, which is
+            // worse than a clean, recoverable failure.
+            pushHistory(main, 'note', '\u26A0 ' + failed.length + ' proposal(s) could not be applied: the quoted excerpt was not found in the document. Copy the "find"/anchor text CHARACTER-FOR-CHARACTER from the current [DOCUMENT] and resend \u2014 do not paraphrase; if unsure of the exact wording, quote a shorter fragment you are certain is verbatim. Unmatched: ' + failed.map(e => '\u201C' + oneLine(String(e.find || '(no find text)')).slice(0, 48) + '\u201D').join('; ') + '.');
+        }
+        if (changed.length || failed.length) {
             persist();
-            const note = 'Applied: ' + changed.map(w => w.count + ' edit(s) \u2192 "' + w.doc.name + '"').join(', ') + '.';
-            pushHistory(main, 'note', note);
             renderHistory();
-            for (const w of changed) syncOpenDocEditor(w.doc, w.before);
             updateSub();
-            toast(note, 'success');
+        }
+        if (changed.length) {
+            for (const w of changed) syncOpenDocEditor(w.doc, w.before);
+            toast(appliedNote + (failed.length ? '  \u2014  ' + failed.length + ' could not locate their excerpt.' : ''), failed.length ? 'warning' : 'success');
+        } else if (failed.length) {
+            toast(failed.length + ' proposal(s) could not locate their excerpt \u2014 the agent has been told to resend them verbatim.', 'warning');
         }
         renderEditCards();
     }
