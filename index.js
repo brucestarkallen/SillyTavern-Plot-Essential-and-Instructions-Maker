@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.4';
+    const VERSION = '0.11.5';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -129,7 +129,7 @@
         '5. At most ONE docedits block per reply, placed at the very END of the reply, after a brief prose explanation of what you changed and why. If nothing needs changing, output no block at all.',
         '6. In prose, refer to the mechanism as the "docedits block" in plain words. The literal angle-bracket tag must appear ONLY around the actual JSON block, never inside explanations.',
         '7. If the document is empty, draft it with "append" edits (one per section works well).',
-        '8. The user may want to discuss before applying. If they reply to talk it over rather than accept, answer in prose with NO block. If they then ask you to reconsider or adjust a proposal, output the improved version in a new block \u2014 it is staged alongside the earlier proposal so they can compare and pick; do not resend proposals that have not changed.',
+        '8. The user may want to discuss before applying. If they reply to talk it over rather than accept, answer in prose with NO block. Proposals you already made but the user has not applied are shown back to you as [PENDING PROPOSALS] with numbers (Edit 1, Edit 2, \u2026). If your new reply is a better version of one of those (the same change, improved) rather than a separate new change, put a supersede tag naming the stale one(s) just before your docedits block \u2014 e.g. <supersede>1</supersede> or <supersede>1,2</supersede> \u2014 so the stale proposal is auto-skipped and the user never applies both. If you are adding a genuinely new, independent change, do not supersede. Never resend a proposal that has not changed.',
         '9. Read-only context may appear as [REFERENCE DOCUMENT: name] blocks. By default every edit applies to the main [DOCUMENT]. To edit a reference document instead, add "doc": "its exact name" to that edit object \u2014 and whenever any reference documents are present, include "doc" on EVERY edit so the target is never ambiguous. Copy "find"/"insert_after" character-for-character from the document you are targeting.',
     ].join('\n');
 
@@ -498,6 +498,7 @@
         let out = String(text || '');
         const b = findBlock(out, 'docedits');
         if (b) out = out.slice(0, b.start) + '[proposed edits below]' + out.slice(b.end);
+        out = out.replace(/<supersede>[\s\S]*?<\/supersede>/gi, '');
         return out.trim();
     }
 
@@ -931,6 +932,42 @@
         return kept.reverse();
     }
 
+    // The agent is shown what it has already proposed but the user hasn't
+    // applied, so it can revise a specific proposal (and mark the stale one with
+    // a <supersede> tag) instead of blindly re-proposing. Numbers match the cards
+    // (1-based by pendingEdits array position, which is stable — applied/skipped
+    // edits are marked, not removed).
+    function formatPendingProposals(edits) {
+        const lines = [];
+        (edits || []).forEach((e, i) => {
+            if (!e || e.status !== 'pending') return;
+            const tgt = e.docName ? ' \u2192 ' + e.docName : '';
+            const kind = e.type === 'replace_all' ? 'full rewrite' : e.type === 'append' ? 'append' : e.type === 'insert' ? 'insert after' : 'replace';
+            lines.push('Edit ' + (i + 1) + ' (' + kind + tgt + '): ' + oneLine(e.reason || '(no reason given)').slice(0, 160));
+        });
+        if (!lines.length) return '';
+        return [
+            '[PENDING PROPOSALS \u2014 you already proposed these and the user has NOT applied them yet]',
+            ...lines,
+            'If your next reply is a better version of one of these (the same change, improved) rather than a separate new change, put a supersede tag naming the stale one(s) just before your docedits block \u2014 e.g. <supersede>1</supersede> or <supersede>1,2</supersede> \u2014 so it is auto-skipped and the user never applies both. If you are adding a genuinely new, independent change, do not supersede. Do not resend a proposal that has not changed.',
+            '[/PENDING PROPOSALS]',
+        ].join('\n');
+    }
+
+    function pendingProposalsBlock() {
+        return formatPendingProposals(pendingEdits);
+    }
+
+    // Parse a <supersede>...</supersede> tag from a reply: the edit numbers
+    // (1-based, matching the cards) the agent is replacing. Tolerant of "1",
+    // "1,2", "Edit 1", "[1, 2]", and newline-separated forms.
+    function parseSupersede(text) {
+        const m = String(text || '').match(/<supersede>([\s\S]*?)<\/supersede>/i);
+        if (!m) return [];
+        const nums = (m[1].match(/\d+/g) || []).map(Number).filter(n => Number.isInteger(n) && n >= 1);
+        return [...new Set(nums)];
+    }
+
     function buildMessages(doc, uptoIdx) {
         const preset = presetForDoc(doc);
         const sys = String(preset?.prompt || '').trim() + '\n\n' + DOCEDITS_PROTOCOL;
@@ -947,7 +984,10 @@
         base.forEach((h, i) => {
             let content = String(h.content ?? '');
             if (h.role === 'note') { msgs.push({ role: 'user', content: '[STATE] ' + content }); return; }
-            if (i === lastUser) content = contextBlocks(doc) + '\n\n' + content;
+            if (i === lastUser) {
+                const extra = [contextBlocks(doc), pendingProposalsBlock()].filter(Boolean).join('\n\n');
+                content = extra + '\n\n' + content;
+            }
             msgs.push({ role: h.role === 'assistant' ? 'assistant' : 'user', content });
         });
         return msgs;
@@ -958,7 +998,7 @@
     // any 🔗 references (sent in full), and the windowed conversation history.
     // Returns a breakdown so the readout can attribute where the tokens go.
     function contextTokenBreakdown(doc) {
-        if (!doc) return { system: 0, doc: 0, refs: [], refsTotal: 0, history: 0, turns: 0, notes: 0, winLen: 0, total: 0 };
+        if (!doc) return { system: 0, doc: 0, refs: [], refsTotal: 0, history: 0, turns: 0, notes: 0, proposals: 0, winLen: 0, total: 0 };
         const preset = presetForDoc(doc);
         const system = estTokens(String(preset?.prompt || '').trim() + '\n\n' + DOCEDITS_PROTOCOL);
         const docTok = estTokens(docBlock(doc));
@@ -971,7 +1011,8 @@
             if (h.role === 'note') { history += estTokens('[STATE] ' + String(h.content ?? '')); notes++; }
             else { history += estTokens(String(h.content ?? '')); turns++; }
         }
-        return { system, doc: docTok, refs, refsTotal, history, turns, notes, winLen: win.length, total: system + docTok + refsTotal + history };
+        const proposals = estTokens(pendingProposalsBlock());
+        return { system, doc: docTok, refs, refsTotal, history, turns, notes, proposals, winLen: win.length, total: system + docTok + refsTotal + history + proposals };
     }
 
     // ------------------------------------------------------------------
@@ -1049,6 +1090,12 @@
             if (parsed.error) {
                 addBubble('note', 'docedits error: ' + parsed.error + ' \u2014 ask the agent to resend valid JSON.');
             }
+            // The agent can mark earlier still-pending proposals it is replacing.
+            let supersededCount = 0;
+            for (const n of parseSupersede(reply)) {
+                const e = pendingEdits[n - 1];
+                if (e && e.status === 'pending') { e.status = 'superseded'; supersededCount++; }
+            }
             if (Number.isInteger(opts.swipeIdx)) {
                 // A swipe is an ALTERNATE version of one reply, not a new idea:
                 // replace that reply's cards (drop its old batch, stage the new).
@@ -1070,6 +1117,9 @@
                 if (stillPending) {
                     addBubble('note', '\u2795 ' + parsed.edits.length + ' new proposal(s) staged below your ' + stillPending + ' still-pending one(s) \u2014 compare and Apply the ones you want.');
                 }
+            }
+            if (supersededCount) {
+                addBubble('note', '\u21A9 Auto-skipped ' + supersededCount + ' earlier proposal(s) the agent replaced.');
             }
             // A chat-only reply (no edits) leaves staged cards untouched.
             renderEditCards();
@@ -1482,8 +1532,6 @@
         const n = Number(id);
         if (!doc.sessions.some(sx => sx.id === n)) return;
         doc.activeSessionId = n;
-        pendingEdits = [];
-        editsCollapsed = false;
         persist();
         renderSessions();
         renderHistory();
@@ -1536,7 +1584,6 @@
         doc.sessions = doc.sessions.filter(sx => sx.id !== cur.id);
         if (!doc.sessions.length) doc.sessions.push({ id: 1, name: 'Session 1', history: [] });
         doc.activeSessionId = doc.sessions[0].id;
-        pendingEdits = [];
         persist();
         renderSessions();
         renderHistory();
@@ -2353,7 +2400,7 @@
                     ? '(entire document \u2014 full rewrite)'
                     : edit.find;
             card.innerHTML =
-                '<div class="la_card_top"><b>' + editTypeLabel(edit) + (edit.docName ? ' \u2192 ' + esc(edit.docName) : '') + '</b><span>' + esc(edit.reason || '') + '</span>' +
+                '<div class="la_card_top"><b>Edit ' + (idx + 1) + ' \u00B7 ' + editTypeLabel(edit) + (edit.docName ? ' \u2192 ' + esc(edit.docName) : '') + '</b><span>' + esc(edit.reason || '') + '</span>' +
                 (edit.status === 'pending'
                     ? '<button class="la_btn la_apply" data-la-apply="' + idx + '">Apply</button><button class="la_btn la_skip" data-la-skip="' + idx + '">Skip</button>'
                     : '') +
@@ -3330,7 +3377,9 @@
             ensureDocShape, sess, parseWorldbook, lintWorldbook, worldbookToST, docLooksLikeWorldbook,
             normalizePosition, positionToST,
             numOr, estTokens, worldbookTokenStats, serializeWorldbook, pickContextWindow, contextTokenBreakdown,
+            parseSupersede, formatPendingProposals,
             getSettings: () => settings,
+            getPendingEdits: () => pendingEdits,
         };
     } catch (e) { /* ignore */ }
 })();

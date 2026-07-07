@@ -324,6 +324,34 @@ setTimeout(() => {
     ok(cb.turns === 2 && cb.notes === 1, 'turn/note counts correct', { turns: cb.turns, notes: cb.notes });
     ok(cb.history === expHist, 'history tokens match (notes prefixed [STATE], counted)', { got: cb.history, exp: expHist });
     ok(cb.system > 0, 'system+protocol contributes tokens', cb.system);
-    ok(cb.total === cb.system + cb.doc + cb.refsTotal + cb.history, 'total = system + doc + refs + history', cb.total);
+    ok(cb.total === cb.system + cb.doc + cb.refsTotal + cb.history + cb.proposals, 'total = system + doc + refs + history + proposals', cb.total);
+    ok(cb.proposals === 0, 'no pending proposals in this test', cb.proposals);
     ok(D.contextTokenBreakdown(null).total === 0, 'null doc -> 0 total');
+
+    // supersede parsing + pending-proposals awareness (agent parity with copilot)
+    console.log('== supersede parsing ==');
+    ok(JSON.stringify(D.parseSupersede('<supersede>1</supersede>')) === '[1]', 'single number');
+    ok(JSON.stringify(D.parseSupersede('text <supersede>1, 2</supersede> more')) === '[1,2]', 'comma list');
+    ok(JSON.stringify(D.parseSupersede('<supersede>Edit 3</supersede>')) === '[3]', '"Edit N" form');
+    ok(JSON.stringify(D.parseSupersede('<supersede>[1, 2]</supersede>')) === '[1,2]', 'JSON-ish form');
+    ok(JSON.stringify(D.parseSupersede('a<supersede>\n1\n2\n</supersede>b')) === '[1,2]', 'newline form');
+    ok(JSON.stringify(D.parseSupersede('<supersede>1,1,2</supersede>')) === '[1,2]', 'dedupes');
+    ok(D.parseSupersede('no tag here').length === 0, 'absent -> []');
+    ok(D.parseSupersede('<supersede></supersede>').length === 0, 'empty -> []');
+    ok(D.parseSupersede('<supersede>0</supersede>').length === 0, 'zero ignored (1-based)');
+
+    console.log('== pending-proposals block ==');
+    ok(D.formatPendingProposals([]) === '', 'no edits -> empty');
+    ok(D.formatPendingProposals([{ status: 'applied', type: 'replace', reason: 'x' }]) === '', 'no pending -> empty');
+    const ppb = D.formatPendingProposals([
+        { status: 'applied', type: 'replace', reason: 'done' },
+        { status: 'pending', type: 'replace', reason: 'fix the magic' },
+        { status: 'pending', type: 'append', docName: 'Lore.json', reason: 'add faction' },
+    ]);
+    ok(/\[PENDING PROPOSALS/.test(ppb), 'has header');
+    ok(/Edit 2 \(replace\): fix the magic/.test(ppb), 'numbering matches array index (skips applied Edit 1)', ppb);
+    ok(/Edit 3 \(append \u2192 Lore\.json\): add faction/.test(ppb), 'shows kind + target doc', ppb);
+    ok(/supersede/.test(ppb), 'teaches the supersede tag');
+    ok(!/supersede/i.test(D.stripBlocks('hello <supersede>1</supersede> world')), 'stripBlocks removes the supersede tag from display');
+    ok(/proposed edits below/.test(D.stripBlocks('foo\n<docedits>\n[]\n</docedits>')), 'stripBlocks still collapses docedits');
 }, 10);
