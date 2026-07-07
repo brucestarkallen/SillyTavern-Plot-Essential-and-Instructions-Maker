@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.11';
+    const VERSION = '0.11.12';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -131,6 +131,7 @@
         '7. If the document is empty, draft it with "append" edits (one per section works well).',
         '8. The user may want to discuss before applying. If they reply to talk it over rather than accept, answer in prose with NO block. Proposals you already made but the user has not applied are shown back to you as [PENDING PROPOSALS] with numbers (Edit 1, Edit 2, \u2026). If your new reply is a better version of one of those (the same change, improved) rather than a separate new change, put a supersede tag naming the stale one(s) just before your docedits block \u2014 e.g. <supersede>1</supersede> or <supersede>1,2</supersede> \u2014 so the stale proposal is auto-skipped and the user never applies both. If you are adding a genuinely new, independent change, do not supersede. Never resend a proposal that has not changed.',
         '9. Read-only context may appear as [REFERENCE DOCUMENT: name] blocks. By default every edit applies to the main [DOCUMENT]. To edit a reference document instead, add "doc": "its exact name" to that edit object \u2014 and whenever any reference documents are present, include "doc" on EVERY edit so the target is never ambiguous. Copy "find"/"insert_after" character-for-character from the document you are targeting.',
+        '10. Make the specific change the user asked for and stop there. Do NOT bundle in unrequested cosmetic edits \u2014 collapsing double spaces, tidying indentation or whitespace, deleting stray-quote artifacts \u2014 unless the user explicitly asks for a cleanup pass. They waste the user\u2019s time, frequently fail to match on whitespace, and bury the change actually wanted.',
     ].join('\n');
 
     // ------------------------------------------------------------------
@@ -669,7 +670,14 @@
         if (best && best.sim >= 0.78) {
             const st = tokens[best.s];
             const en = tokens[best.s + best.w - 1];
-            return { start: st.index, end: en.index + en[0].length, fuzzy: true, sim: best.sim, count: 1 };
+            // A fuzzy match is SAFE to apply only if its first and last words match the
+            // needle's exactly: then the replaced span begins and ends on those exact
+            // words, so nothing is left behind (no duplicated fragment) and no adjacent
+            // line is reflowed. This still lets whitespace-only differences through
+            // (identical words, different spacing) while refusing paraphrases whose
+            // edges drift. applyEditToText refuses unsafe fuzzy matches.
+            const safe = hayWords[best.s] === needleWords[0] && hayWords[best.s + best.w - 1] === needleWords[nw - 1];
+            return { start: st.index, end: en.index + en[0].length, fuzzy: true, safe, sim: best.sim, count: 1 };
         }
         return null;
     }
@@ -696,19 +704,19 @@
         const needle = String(edit.find || '');
         if (!needle) return { ok: false, reason: 'missing find/anchor text' };
         const loc = locate(text, needle);
-        // Approximate (fuzzy) matches are NOT applied. The fuzzy matcher aligns a WORD
-        // window whose size/edges need not match the intended span, so applying it can
-        // leave a duplicated fragment ("gloss. gloss.") or reflow an adjacent line's
-        // indentation. Only exact / quote-normalized matches (precise character
-        // boundaries) are written; anything inexact fails cleanly and the agent
-        // re-quotes it verbatim — it has the full document in context, so it can.
-        if (!loc || loc.fuzzy) {
+        // Exact / quote-normalized matches always apply (precise character boundaries).
+        // A FUZZY match applies only when it is edge-safe (loc.safe: first & last words
+        // match the needle exactly), which guarantees the replaced span begins/ends on
+        // those exact words — nothing duplicated, no adjacent line reflowed. This lets a
+        // whitespace-only difference (same words, different spacing) apply, while an
+        // edge-drifting paraphrase is refused and re-quoted.
+        if (!loc || (loc.fuzzy && !loc.safe)) {
             const what = edit.type === 'insert' ? 'insert_after anchor' : '"find" text';
             return { ok: false, reason: (loc && loc.fuzzy)
-                ? what + ' only matched approximately (' + Math.round(loc.sim * 100) + '%), not exactly — applying an inexact match can duplicate or reflow nearby text, so it was not applied. Copy it character-for-character from the current [DOCUMENT], including exact spacing and indentation, then resend.'
+                ? what + ' matched approximately (' + Math.round(loc.sim * 100) + '%) but its start/end words differ from the document, so it was not applied (that could duplicate or reflow text). Copy it character-for-character from the current [DOCUMENT] and resend.'
                 : what + ' not located — copy it character-for-character from the current [DOCUMENT] and resend.' };
         }
-        let note = '';
+        let note = loc.fuzzy ? (loc.sim >= 0.995 ? ' (spacing normalized)' : ' (fuzzy ' + Math.round(loc.sim * 100) + '%)') : '';
         let next;
         if (edit.type === 'insert') {
             // Insert on a new line after the END of the line containing the anchor.

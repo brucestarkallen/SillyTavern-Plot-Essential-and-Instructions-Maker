@@ -113,6 +113,17 @@ ok(fdoc === 'The rule here is: do not bolt on gloss, and keep the prose plain.',
 const fLoc = D.locate(fdoc, 'do NOT bolt onto the glosss thread');
 ok(fLoc === null || fLoc.fuzzy === true, 'locate still surfaces the near/fuzzy match for the failure message (just not applied)', fLoc);
 
+// v0.11.12: a whitespace-only difference (edge words match) must APPLY — it is edge-safe,
+// so no fragment/reflow — this is the exact case v0.11.10 was wrongly refusing at "100%".
+const wsdoc = 'the counter: IF  2+ NPCs then stop and reset.';   // NOTE the double space after IF
+const wsHit = D.applyEditToText(wsdoc, { type: 'replace', find: 'IF 2+ NPCs', replace: 'IF two-plus NPCs', reason: '' }); // single space in find
+ok(wsHit.ok && wsHit.text.includes('IF two-plus NPCs') && !wsHit.text.includes('IF  2+'), 'whitespace-only mismatch (edges match) now applies — collapses the double space', wsHit.text);
+ok((wsHit.text.match(/NPCs/g) || []).length === 1, 'edge-safe apply leaves no duplicated fragment', wsHit.text);
+// but an edge-DRIFTING near match (last word differs) is still refused (no wrong-passage corruption)
+const driftDoc = 'alpha bravo charlie delta echo';
+const drift = D.applyEditToText(driftDoc, { type: 'replace', find: 'alpha bravo charlie foxtrot', replace: 'Z', reason: '' });
+ok(drift.ok === false, 'edge-drifting fuzzy (last word differs) is still refused', drift.reason);
+
 console.log('== grow (stream accumulator) ==');
 ok(D.grow('', 'Hel') === 'Hel' && D.grow('Hel', 'Hello') === 'Hello' && D.grow('Hello', ' wor') === 'Hello wor', 'cumulative and delta chunks both accumulate');
 
