@@ -37,6 +37,18 @@ const pb = D.parseDocEdits(badJson);
 ok(pb.edits.length === 0 && pb.error, 'invalid JSON -> harmless error note, no crash', pb.error);
 ok(D.parseDocEdits('no block at all').edits.length === 0, 'no block -> empty edits');
 
+// v0.11.11: literal newlines/tabs inside string values (the #1 model JSON slip) are repaired
+const litNL = 'here:\n<docedits>\n[\n  {"find": "line one\nline two", "replace": "new one\nnew two\nnew three", "reason": "multi-line raw breaks"}\n]\n</docedits>';
+const pNL = D.parseDocEdits(litNL);
+ok(pNL.edits.length === 1 && !pNL.error, 'docedits with RAW line breaks inside strings now parses (repaired)', pNL.error || pNL.edits.length);
+ok(pNL.edits[0] && pNL.edits[0].find === 'line one\nline two' && pNL.edits[0].replace === 'new one\nnew two\nnew three', 'repaired values keep the breaks as real newlines', pNL.edits[0]);
+const litTab = '<docedits>[{"find": "a\tb", "replace": "c", "reason": "raw tab"}]</docedits>';
+ok(D.parseDocEdits(litTab).edits.length === 1, 'raw tab inside a string is repaired too');
+// a backslash-n that is already correct must survive untouched
+const goodNL = '<docedits>[{"find": "a\\nb", "replace": "c", "reason": "ok"}]</docedits>';
+const pGood = D.parseDocEdits(goodNL);
+ok(pGood.edits.length === 1 && pGood.edits[0].find === 'a\nb', 'already-escaped \\n is not double-escaped', pGood.edits[0]);
+
 console.log('== stripBlocks ==');
 const stripped = D.stripBlocks(poisoned);
 ok(stripped.includes('[proposed edits below]') && !stripped.includes('"append"'), 'block replaced with placeholder in display text');

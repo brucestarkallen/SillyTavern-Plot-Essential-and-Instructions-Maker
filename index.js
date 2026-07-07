@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.10';
+    const VERSION = '0.11.11';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -125,7 +125,7 @@
         '1. "find" and "insert_after" must be copied CHARACTER-FOR-CHARACTER from the current [DOCUMENT]: same wording, punctuation, capitalization, spacing and line breaks (write line breaks as \\n). Never paraphrase, trim, or fix typos inside them.',
         '2. Keep "find" as short as possible while staying unique in the document (one line up to a few lines). If the excerpt appears more than once, extend it until it is unique.',
         '3. Prefer several small surgical edits over one big rewrite. Use "append" for new sections at the end of the document. Use "insert_after" to add content below an existing line: its "replace" text is placed starting on a new line directly under the anchor line — put a leading \\n inside "replace" if you want a blank line between them. Use "replace_all" ONLY when the user explicitly requests a full rewrite of the whole document.',
-        '4. The block must be valid JSON: double quotes, \\n for newlines inside strings, no comments, no trailing commas, no markdown fences.',
+        '4. The block must be valid JSON: property strings in double quotes; write EVERY line break inside a value as \\n (never a real line break); if a value must contain a quotation mark use single quotes or escape it as \\", never a raw double quote inside the value; no comments, no trailing commas, no markdown fences.',
         '5. At most ONE docedits block per reply, placed at the very END of the reply, after a brief prose explanation of what you changed and why. If nothing needs changing, output no block at all.',
         '6. In prose, refer to the mechanism as the "docedits block" in plain words. The literal angle-bracket tag must appear ONLY around the actual JSON block, never inside explanations.',
         '7. If the document is empty, draft it with "append" edits (one per section works well).',
@@ -461,6 +461,29 @@
         return fallback;
     }
 
+    // Models very often emit multi-line "find"/"replace" values with RAW line
+    // breaks (and tabs) instead of \n, which is invalid JSON. Escape control
+    // characters that occur *inside* string literals so the block still parses.
+    // Only chars between unescaped double-quotes are touched; structural
+    // whitespace outside strings is untouched. (Unescaped inner double-quotes are
+    // NOT repairable this way — the model must use single quotes or escape them.)
+    function escapeRawControlsInStrings(s) {
+        let out = '', inStr = false, esc = false;
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if (esc) { out += c; esc = false; continue; }
+            if (c === '\\') { out += c; esc = true; continue; }
+            if (c === '"') { inStr = !inStr; out += c; continue; }
+            if (inStr) {
+                if (c === '\n') { out += '\\n'; continue; }
+                if (c === '\r') { out += '\\r'; continue; }
+                if (c === '\t') { out += '\\t'; continue; }
+            }
+            out += c;
+        }
+        return out;
+    }
+
     function parseDocEdits(text) {
         const b = findBlock(text, 'docedits');
         if (!b) return { edits: [] };
@@ -472,9 +495,16 @@
         try {
             arr = JSON.parse(raw);
         } catch (e1) {
-            // One gentle repair pass: kill trailing commas, then retry.
-            try { arr = JSON.parse(raw.replace(/,\s*([\]}])/g, '$1')); }
-            catch (e2) { return { edits: [], error: 'could not parse docedits JSON: ' + e2.message }; }
+            // Repair passes for the common LLM JSON slips, tried in order.
+            let repaired = raw.replace(/,\s*([\]}])/g, '$1');   // 1) trailing commas
+            try { arr = JSON.parse(repaired); }
+            catch (e2) {
+                // 2) literal newlines/tabs inside string values (the #1 slip:
+                // models paste multi-line find/replace with raw breaks, not \n).
+                repaired = escapeRawControlsInStrings(repaired);
+                try { arr = JSON.parse(repaired); }
+                catch (e3) { return { edits: [], error: 'could not parse docedits JSON: ' + e3.message }; }
+            }
         }
         if (!Array.isArray(arr)) return { edits: [], error: 'docedits block is not a JSON array' };
         const edits = [];
