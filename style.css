@@ -273,13 +273,13 @@
 
 .la_card .la_card_top { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; flex-wrap: wrap; }
 .la_card .la_card_top b { color: var(--SmartThemeQuoteColor, #7dd3a8); white-space: nowrap; }
-.la_card .la_card_top span {
-    flex: 1 1 auto;
+.la_card .la_card_top .la_apply { margin-left: auto; }
+.la_card .la_card_reason {
     opacity: 0.72;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 50px;
+    font-size: 0.9em;
+    margin-bottom: 5px;
+    word-break: break-word;
+    line-height: 1.4;
 }
 
 .la_diff {

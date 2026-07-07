@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.5';
+    const VERSION = '0.11.6';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -2400,11 +2400,12 @@
                     ? '(entire document \u2014 full rewrite)'
                     : edit.find;
             card.innerHTML =
-                '<div class="la_card_top"><b>Edit ' + (idx + 1) + ' \u00B7 ' + editTypeLabel(edit) + (edit.docName ? ' \u2192 ' + esc(edit.docName) : '') + '</b><span>' + esc(edit.reason || '') + '</span>' +
+                '<div class="la_card_top"><b>Edit ' + (idx + 1) + ' \u00B7 ' + editTypeLabel(edit) + (edit.docName ? ' \u2192 ' + esc(edit.docName) : '') + '</b>' +
                 (edit.status === 'pending'
                     ? '<button class="la_btn la_apply" data-la-apply="' + idx + '">Apply</button><button class="la_btn la_skip" data-la-skip="' + idx + '">Skip</button>'
                     : '') +
                 '</div>' +
+                (edit.reason ? '<div class="la_card_reason">' + esc(edit.reason) + '</div>' : '') +
                 '<div class="la_diff la_before">' + esc(findShown) + '</div>' +
                 '<div class="la_diff la_after">' + esc(edit.replace) + '</div>' +
                 (edit.status !== 'pending' ? '<div class="la_card_status ' + statusCls(edit.status) + '">' + esc(edit.status) + '</div>' : '');
