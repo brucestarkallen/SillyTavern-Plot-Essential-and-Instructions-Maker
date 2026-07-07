@@ -91,6 +91,16 @@ ok(!r6.ok && /not located/.test(r6.reason), 'missing find -> clean failure with 
 const r7 = D.applyEditToText('a b a b', { type: 'replace', find: 'a b', replace: 'Z' });
 ok(r7.ok && /1 of 2/.test(r7.note || ''), 'ambiguous exact match flagged (1 of N)', r7.note);
 
+// v0.11.10: inexact (fuzzy) matches must NOT be applied — they can duplicate/reflow.
+const fdoc = 'The rule here is: do not bolt on gloss, and keep the prose plain.';
+const fExact = D.applyEditToText(fdoc, { type: 'replace', find: 'do not bolt on gloss', replace: 'do not add gloss', reason: '' });
+ok(fExact.ok && (fExact.text.match(/gloss/g) || []).length === 1 && fExact.text.includes('do not add gloss'), 'exact match applies once — no duplicated fragment', fExact.text);
+const fInexact = D.applyEditToText(fdoc, { type: 'replace', find: 'do NOT bolt onto the glosss thread', replace: 'X', reason: '' });
+ok(fInexact.ok === false, 'inexact/paraphrased find is refused (not applied) so it cannot corrupt', fInexact.reason);
+ok(fdoc === 'The rule here is: do not bolt on gloss, and keep the prose plain.', 'source untouched (pure function mutated nothing)');
+const fLoc = D.locate(fdoc, 'do NOT bolt onto the glosss thread');
+ok(fLoc === null || fLoc.fuzzy === true, 'locate still surfaces the near/fuzzy match for the failure message (just not applied)', fLoc);
+
 console.log('== grow (stream accumulator) ==');
 ok(D.grow('', 'Hel') === 'Hel' && D.grow('Hel', 'Hello') === 'Hello' && D.grow('Hello', ' wor') === 'Hello wor', 'cumulative and delta chunks both accumulate');
 

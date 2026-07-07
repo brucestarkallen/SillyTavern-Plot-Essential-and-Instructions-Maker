@@ -56,6 +56,7 @@ UI: **+WB** creates one (`[]` + WB preset); **View** on a worldbook opens the **
 - Smart scrolling: only auto-scroll if the user was within ~60px of the bottom, measured BEFORE mutating.
 - Parse errors in docedits = harmless note, never a crash or partial apply.
 - No length caps on presets or documents anywhere.
+- `applyEditToText` applies ONLY exact / quote-normalized matches. A fuzzy match from `locate` is surfaced (for the failure message's similarity %) but is **never applied** — the fuzzy word-window boundaries need not align with the intended span, so applying one can leave a duplicated fragment or reflow an adjacent line's indentation (v0.11.10). Do NOT re-enable fuzzy apply. Inexact matches fail cleanly and are fed back so the agent re-quotes verbatim (it has the full document in context).
 - Native browser widgets are suspect on this device: `<details>` failed to expand and `setPointerCapture` failed silently — always use explicit JS toggles/handlers with inline styles.
 
 ## Iteration protocol

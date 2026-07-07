@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.9';
+    const VERSION = '0.11.10';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -666,11 +666,19 @@
         const needle = String(edit.find || '');
         if (!needle) return { ok: false, reason: 'missing find/anchor text' };
         const loc = locate(text, needle);
-        if (!loc) {
+        // Approximate (fuzzy) matches are NOT applied. The fuzzy matcher aligns a WORD
+        // window whose size/edges need not match the intended span, so applying it can
+        // leave a duplicated fragment ("gloss. gloss.") or reflow an adjacent line's
+        // indentation. Only exact / quote-normalized matches (precise character
+        // boundaries) are written; anything inexact fails cleanly and the agent
+        // re-quotes it verbatim — it has the full document in context, so it can.
+        if (!loc || loc.fuzzy) {
             const what = edit.type === 'insert' ? 'insert_after anchor' : '"find" text';
-            return { ok: false, reason: what + ' not located (even fuzzy) — ask the agent to resend it copied verbatim' };
+            return { ok: false, reason: (loc && loc.fuzzy)
+                ? what + ' only matched approximately (' + Math.round(loc.sim * 100) + '%), not exactly — applying an inexact match can duplicate or reflow nearby text, so it was not applied. Copy it character-for-character from the current [DOCUMENT], including exact spacing and indentation, then resend.'
+                : what + ' not located — copy it character-for-character from the current [DOCUMENT] and resend.' };
         }
-        let note = loc.fuzzy ? ' (fuzzy ' + Math.round(loc.sim * 100) + '%)' : '';
+        let note = '';
         let next;
         if (edit.type === 'insert') {
             // Insert on a new line after the END of the line containing the anchor.
@@ -679,7 +687,7 @@
             next = text.slice(0, ip) + '\n' + rep + text.slice(ip);
         } else {
             next = text.slice(0, loc.start) + rep + text.slice(loc.end);
-            if (!loc.fuzzy && loc.count > 1) note += ' (matched 1 of ' + loc.count + ' occurrences)';
+            if (loc.count > 1) note += ' (matched 1 of ' + loc.count + ' occurrences)';
         }
         if (next === text) return { ok: false, reason: 'no change produced' };
         return { ok: true, text: next, note };
