@@ -290,10 +290,17 @@
     margin: 4px 0;
     font-family: monospace;
     font-size: 0.92em;
-    max-height: 170px;
-    overflow-y: auto;
 }
-.la_diff.la_before { background-color: rgba(210, 70, 70, 0.13); border-left: 3px solid rgba(225, 95, 95, 0.85); }
+/* No nested scroll boxes — the cards area (#la_edits) is the single scroll
+   container. A nested scroll traps the finger on mobile, so the red "before"
+   is a short clipped preview and the green "after" (the new text you're
+   reviewing) flows in full; drag the whole cards region to read all of it. */
+.la_diff.la_before {
+    background-color: rgba(210, 70, 70, 0.13);
+    border-left: 3px solid rgba(225, 95, 95, 0.85);
+    max-height: 92px;
+    overflow: hidden;
+}
 .la_diff.la_after  { background-color: rgba(70, 190, 110, 0.13); border-left: 3px solid rgba(85, 205, 125, 0.85); }
 
 .la_card .la_card_status {
