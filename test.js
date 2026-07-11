@@ -721,3 +721,53 @@ console.log('== end-to-end: REPHRASED overlapping finds (staging rules cannot se
     ok(e1.status === 'superseded' && applied === 1 && failed === 0, 'older overlapping proposal auto-superseded; exactly one apply, zero failures', { s1: e1.status, applied, failed });
     ok(text === 'Rule: the hero always deals honestly with allies. End.', 'the NEWEST wording wins cleanly', text);
 })();
+
+// ==================================================================
+// v0.13.0 — backup all / restore (additive by construction)
+// ==================================================================
+console.log('== backup round-trip + strict parse ==');
+(function () {
+    const st = {
+        docs: [
+            { id: 'd1', name: 'Sim Engine', text: 'RULES', undo: [{ text: 'huge transient state' }], refs: ['d2'], presetId: 'p1', sessions: [{ id: 1, name: 'S1', history: [{ role: 'user', content: 'hi' }] }] },
+            { id: 'd2', name: 'Lore', text: 'WORLD', sessions: [{ id: 1, name: 'S1', history: [] }] },
+        ],
+        presets: [{ id: 'p1', name: 'Maker', prompt: 'PROMPT A' }],
+    };
+    const pay = D.buildBackupPayload(st);
+    ok(pay.format === 'plot-essential-backup' && pay.v === 1 && pay.docs.length === 2, 'payload carries format tag + all docs');
+    ok(!('undo' in pay.docs[0]), 'transient undo stacks are excluded from backups');
+    ok(pay.docs[0].sessions[0].history.length === 1, 'sessions/history ARE included (continuity)');
+    ok(st.docs[0].undo.length === 1, 'building a backup does not mutate live settings');
+    const round = D.parseBackupPayload(JSON.stringify(pay));
+    ok(!round.error && round.docs.length === 2 && round.presets.length === 1, 'round-trip parses clean');
+    ok(D.parseBackupPayload('not json').error, 'garbage rejected');
+    ok(D.parseBackupPayload('{"docs":[]}').error, 'missing format tag rejected');
+    ok(D.parseBackupPayload('{"format":"plot-essential-backup","docs":"nope"}').error, 'non-array docs rejected');
+    ok(D.parseBackupPayload(JSON.stringify({ format: 'plot-essential-backup', docs: [{ name: 7 }] })).error, 'malformed doc entry rejected');
+
+    console.log('== restore merge: additive, fresh ids, refs remapped ==');
+    let n = 0; const mkid = () => 'new' + (++n);
+    const live = {
+        docs: [{ id: 'x1', name: 'Sim Engine', text: 'CURRENT', sessions: [{ id: 1, name: 'S1', history: [] }] }],
+        presets: [{ id: 'p1', name: 'Maker', prompt: 'PROMPT B (edited since)' }],
+    };
+    const sum = D.mergeBackupIntoSettings(live, round, mkid);
+    ok(sum.addedDocs === 2 && live.docs.length === 3, 'all backup docs added; existing untouched', sum);
+    ok(live.docs[0].text === 'CURRENT' && live.docs[0].id === 'x1', 'existing document never overwritten');
+    const rSim = live.docs.find(d => d.name === 'Sim Engine (restored)');
+    const rLore = live.docs.find(d => d.name === 'Lore');
+    ok(!!rSim && !!rLore, 'name collision suffixed; non-colliding name kept', live.docs.map(d => d.name));
+    ok(rSim.id !== 'd1' && rSim.id.startsWith('new'), 'restored docs get fresh ids');
+    ok(Array.isArray(rSim.refs) && rSim.refs.length === 1 && rSim.refs[0] === rLore.id, 'refs remapped to the restored copies\u2019 fresh ids', rSim.refs);
+    ok(sum.addedPresets === 1 && live.presets.length === 2 && live.presets[1].name === 'Maker (restored)', 'same preset id with a DIFFERENT prompt: both kept, restored copy renamed');
+    ok(rSim.presetId === live.presets[1].id, 'restored doc follows its restored preset copy, not the diverged live one');
+    // second restore of the same payload: suffix increments, still additive
+    const sum2 = D.mergeBackupIntoSettings(live, D.parseBackupPayload(JSON.stringify(pay)), mkid);
+    ok(sum2.addedDocs === 2 && live.docs.some(d => d.name === 'Sim Engine (restored 2)') && live.docs.some(d => d.name === 'Lore (restored)'), 'repeat restore keeps adding with incremented suffixes', live.docs.map(d => d.name));
+    // dangling ref (target not in backup) is dropped, not left broken
+    const partial = D.parseBackupPayload(JSON.stringify({ format: 'plot-essential-backup', docs: [{ id: 'd1', name: 'Solo', text: 't', refs: ['ghost'] }] }));
+    const live2 = { docs: [], presets: [] };
+    D.mergeBackupIntoSettings(live2, partial, mkid);
+    ok(live2.docs[0].refs.length === 0, 'a ref to a doc missing from the backup is dropped, never dangles');
+})();

@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.12.3';
+    const VERSION = '0.13.0';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -2228,6 +2228,116 @@
         toast(ok ? 'Document copied (' + (doc.text || '').length.toLocaleString() + ' chars).' : 'Copy failed \u2014 open View and select manually.', ok ? 'success' : 'error');
     }
 
+    // ------------------------------------------------------------------
+    // Backup all / Restore. Documents here are the crown jewels (authored
+    // AI-instruction files) and Del is a single confirm away from
+    // irreversible loss; browser/Termux storage wipes are real. One tap
+    // downloads EVERYTHING (docs + sessions + presets) as one JSON file;
+    // Restore is ADDITIVE by construction — restored docs get fresh ids and
+    // suffixed names, existing data is never overwritten or merged into.
+    // Undo stacks are transient working state and are excluded.
+    // ------------------------------------------------------------------
+    const BACKUP_FORMAT = 'plot-essential-backup';
+
+    function buildBackupPayload(st) {
+        const docs = (st.docs || []).map(d => {
+            const c = JSON.parse(JSON.stringify(d));
+            delete c.undo;
+            return c;
+        });
+        const presets = JSON.parse(JSON.stringify(st.presets || []));
+        return { format: BACKUP_FORMAT, v: 1, exportedAt: new Date().toISOString(), docs, presets };
+    }
+
+    function parseBackupPayload(raw) {
+        let p;
+        try { p = JSON.parse(String(raw || '')); }
+        catch (e) { return { error: 'not valid JSON: ' + e.message }; }
+        if (!p || p.format !== BACKUP_FORMAT) return { error: 'not a Plot Essential backup file (missing format tag)' };
+        if (!Array.isArray(p.docs)) return { error: 'backup has no document list' };
+        for (const d of p.docs) {
+            if (!d || typeof d !== 'object' || typeof d.name !== 'string' || typeof (d.text ?? '') !== 'string') {
+                return { error: 'a document entry in the backup is malformed' };
+            }
+        }
+        if (p.presets != null && !Array.isArray(p.presets)) return { error: 'preset list is malformed' };
+        return { docs: p.docs, presets: Array.isArray(p.presets) ? p.presets : [] };
+    }
+
+    // Additive merge. Mutates st; returns a summary. uidFn injected so the
+    // logic is pure and testable.
+    function mergeBackupIntoSettings(st, payload, uidFn) {
+        const existingNames = new Set((st.docs || []).map(d => String(d.name)));
+        const idMap = new Map(); // old backup doc id -> fresh id
+        const presetIdMap = new Map();
+        let addedPresets = 0;
+        for (const bp of (payload.presets || [])) {
+            if (!bp || typeof bp !== 'object') continue;
+            const cur = (st.presets || []).find(x => x.id === bp.id);
+            if (cur && String(cur.prompt) === String(bp.prompt)) { presetIdMap.set(bp.id, bp.id); continue; }
+            if (!cur) { st.presets.push(JSON.parse(JSON.stringify(bp))); presetIdMap.set(bp.id, bp.id); addedPresets++; continue; }
+            // same id, different prompt: keep both — restored copy under a fresh id
+            const nid = uidFn();
+            st.presets.push(Object.assign(JSON.parse(JSON.stringify(bp)), { id: nid, name: String(bp.name || 'Preset') + ' (restored)' }));
+            presetIdMap.set(bp.id, nid);
+            addedPresets++;
+        }
+        const freshName = (n) => {
+            let base = String(n || 'Untitled'), name = base, k = 2;
+            while (existingNames.has(name)) { name = base + ' (restored' + (k > 2 ? ' ' + (k - 1) : '') + ')'; k++; }
+            existingNames.add(name);
+            return name;
+        };
+        const added = [];
+        for (const bd of payload.docs) {
+            const c = JSON.parse(JSON.stringify(bd));
+            const oldId = c.id;
+            c.id = uidFn();
+            if (oldId != null) idMap.set(oldId, c.id);
+            c.name = freshName(c.name);
+            delete c.undo;
+            if (c.presetId != null && presetIdMap.has(c.presetId)) c.presetId = presetIdMap.get(c.presetId);
+            added.push(c);
+        }
+        // refs point at other docs by id: remap within the restored set; a ref
+        // to a doc that was not part of the backup would dangle — drop it.
+        for (const c of added) {
+            if (Array.isArray(c.refs)) c.refs = c.refs.map(r => idMap.get(r)).filter(Boolean);
+        }
+        st.docs = (st.docs || []).concat(added);
+        return { addedDocs: added.length, addedPresets };
+    }
+
+    function backupAll() {
+        const payload = buildBackupPayload(settings);
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const fname = 'plot-essential-backup-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes()) + '.json';
+        const ok = downloadText(fname, JSON.stringify(payload, null, 2));
+        toast(ok
+            ? 'Backup of ' + payload.docs.length + ' document(s) + ' + payload.presets.length + ' preset(s) downloading\u2026'
+            : 'Download failed \u2014 Restore window works with paste too: open \uD83D\uDCE6\u2192, copy the JSON from there instead.', ok ? 'success' : 'error');
+    }
+
+    function restoreBackup() {
+        showEditor({
+            title: '\uD83D\uDCE6 Restore backup \u2014 paste the backup JSON',
+            text: '',
+            saveLabel: 'Restore (adds, never overwrites)',
+            closeOnSave: true,
+            onSave: (text) => {
+                const p = parseBackupPayload(text);
+                if (p.error) { toast('Restore failed: ' + p.error, 'error'); return; }
+                const sum = mergeBackupIntoSettings(settings, p, uid);
+                for (const d of settings.docs) ensureDocShape(d);
+                persist();
+                renderAll();
+                toast('Restored ' + sum.addedDocs + ' document(s)' + (sum.addedPresets ? ' + ' + sum.addedPresets + ' preset(s)' : '') + ' \u2014 added alongside your existing ones (nothing overwritten).', 'success');
+            },
+        });
+    }
+
+
     function viewDoc() {
         const doc = activeDoc();
         if (!doc) { toast('No document selected.', 'warning'); return; }
@@ -2398,6 +2508,8 @@
             '      <button class="la_btn" id="la_ddel" title="Delete document">Del</button>',
             '      <button class="la_btn" id="la_imp" title="Import: pick a file (.md / .json / .yaml \u2026) or paste text">Imp</button>',
             '      <button class="la_btn" id="la_exp" title="Export: download with a chosen filename/extension">Exp</button>',
+            '      <button class="la_btn" id="la_bakall" title="Backup ALL documents, sessions and presets to one JSON file">\uD83D\uDCE6\u2193</button>',
+            '      <button class="la_btn" id="la_bakrst" title="Restore a backup JSON \u2014 adds everything alongside your current data, never overwrites">\uD83D\uDCE6\u2192</button>',
             '      <button class="la_btn" id="la_wbexp" title="Export as SillyTavern World Info (.json) \u2014 for worldbook documents">\uD83C\uDF10\u2192ST</button>',
             '      <button class="la_btn" id="la_dcopy" title="Copy the whole document to the clipboard">\uD83D\uDCCB</button>',
             '      <button class="la_btn" id="la_lint" title="Check the raw text deterministically: double-spaces, trailing whitespace, JSON validity (in code, not via the AI)">\uD83D\uDD0D Check</button>',
@@ -2497,6 +2609,8 @@
         el('la_ddel').addEventListener('click', () => deleteDoc());
         el('la_imp').addEventListener('click', () => importDoc());
         el('la_exp').addEventListener('click', () => exportDoc());
+        el('la_bakall').addEventListener('click', () => backupAll());
+        el('la_bakrst').addEventListener('click', () => restoreBackup());
         el('la_wbexp').addEventListener('click', () => exportWorldbookST());
         el('la_dcopy').addEventListener('click', () => copyDoc());
         el('la_lint').addEventListener('click', () => showDocLint());
@@ -3971,7 +4085,7 @@
             parseSupersede, formatPendingProposals,
             docLint, collapseInlineSpaces, repairDocJson,
             stripTrailingCommasOutsideStrings, escapeRawControlsInStrings,
-            adjustStampsForSplice, editIdentityKey, findAutoSuperseded, resolveSpanConflicts, buildMessages, blockTokensFor, docBlock, refBlock,
+            adjustStampsForSplice, editIdentityKey, findAutoSuperseded, resolveSpanConflicts, buildBackupPayload, parseBackupPayload, mergeBackupIntoSettings, buildMessages, blockTokensFor, docBlock, refBlock,
             getSettings: () => settings,
             getPendingEdits: () => pendingEdits,
         };
