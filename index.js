@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.11.17';
+    const VERSION = '0.12.0';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -174,6 +174,23 @@
 
     function ctx() {
         return SillyTavern.getContext();
+    }
+
+    // Open overlays in stacking order (last = topmost). Every overlay's
+    // Escape handler consults this so one Esc closes only the top window
+    // instead of the whole stack at once.
+    const overlayStack = [];
+    function overlayOpened(id) {
+        const i = overlayStack.indexOf(id);
+        if (i !== -1) overlayStack.splice(i, 1);
+        overlayStack.push(id);
+    }
+    function overlayClosed(id) {
+        const i = overlayStack.indexOf(id);
+        if (i !== -1) overlayStack.splice(i, 1);
+    }
+    function overlayIsTop(id) {
+        return overlayStack.length > 0 && overlayStack[overlayStack.length - 1] === id;
     }
 
     function esc(s) {
@@ -394,6 +411,44 @@
         return doc.sessions.reduce((m, sx) => Math.max(m, Number(sx.id) || 0), 0) + 1;
     }
 
+    // Two staged edits are the same PROPOSAL when their operation and payload
+    // match — status/batch/stamps are bookkeeping, not identity. Used to stop
+    // swipe re-navigation from resurrecting an already-applied edit as pending.
+    function editIdentityKey(e) {
+        return JSON.stringify([e.type, e.find ?? null, e.replace ?? '', e.docName ?? null, e.all === true]);
+    }
+
+    // Staged proposals are stamped with their source (fromSess = session id,
+    // fromMsg = history index of the generating assistant reply). When messages
+    // are spliced out of a session, this keeps the stamps aligned: edits whose
+    // source message was removed are dropped, later stamps shift down. Pure —
+    // returns the surviving edits — so it is exported and test-covered.
+    function adjustStampsForSplice(edits, sid, startIdx, deleteCount) {
+        const del = Number.isFinite(deleteCount) ? Math.max(0, deleteCount) : Infinity;
+        const out = [];
+        for (const e of (edits || [])) {
+            if (!e || e.fromSess !== sid || !Number.isInteger(e.fromMsg) || e.fromMsg < 0) { out.push(e); continue; }
+            if (e.fromMsg >= startIdx && e.fromMsg < startIdx + del) continue; // source message removed
+            if (e.fromMsg >= startIdx + del) e.fromMsg -= del;
+            out.push(e);
+        }
+        return out;
+    }
+
+    // Append an entry to a specific session, enforcing the 80-entry cap and
+    // shifting/dropping proposal stamps when the cap splices the front. Used by
+    // pushHistory (active session) and by the mid-generation switch path (the
+    // ORIGINATING session, which may no longer be active).
+    function appendToSession(sessObj, entry) {
+        sessObj.history.push(entry);
+        const over = sessObj.history.length - 80;
+        if (over > 0) {
+            sessObj.history.splice(0, over);
+            pendingEdits = adjustStampsForSplice(pendingEdits, sessObj.id, 0, over);
+        }
+        return entry;
+    }
+
     function pushHistory(doc, role, content, think) {
         if (!doc) return;
         const entry = { role, content: String(content ?? '') };
@@ -402,9 +457,7 @@
             entry.swipes = [{ content: entry.content, think: entry.think || '' }];
             entry.swipeId = 0;
         }
-        const m = sess(doc);
-        m.history.push(entry);
-        if (m.history.length > 80) m.history.splice(0, m.history.length - 80);
+        appendToSession(sess(doc), entry);
         persist();
         return entry;
     }
@@ -480,6 +533,41 @@
                 if (c === '\n') { out += '\\n'; continue; }
                 if (c === '\r') { out += '\\r'; continue; }
                 if (c === '\t') { out += '\\t'; continue; }
+                const code = c.charCodeAt(0);
+                if (code < 0x20) { // any other raw C0 control (\b, \f, \v, …) is equally invalid JSON
+                    if (c === '\b') { out += '\\b'; continue; }
+                    if (c === '\f') { out += '\\f'; continue; }
+                    out += '\\u' + code.toString(16).padStart(4, '0');
+                    continue;
+                }
+            }
+            out += c;
+        }
+        return out;
+    }
+
+    // Drop trailing commas (",]" / ",}") OUTSIDE string literals only. The old
+    // blind regex  ,\s*([\]}])  also fired INSIDE string values — a content
+    // string like "Options: [a, b, ]" had its comma silently deleted by every
+    // repair pass (docedits repair, Repair JSON, worldbook tolerant parse).
+    // Same quote/escape state machine as escapeRawControlsInStrings, so it is
+    // coherent even while strings still contain raw (not yet escaped) newlines.
+    function stripTrailingCommasOutsideStrings(s) {
+        let out = '', inStr = false, escd = false;
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if (inStr) {
+                out += c;
+                if (escd) { escd = false; continue; }
+                if (c === '\\') { escd = true; continue; }
+                if (c === '"') inStr = false;
+                continue;
+            }
+            if (c === '"') { inStr = true; out += c; continue; }
+            if (c === ',') {
+                let j = i + 1;
+                while (j < s.length && /\s/.test(s[j])) j++;
+                if (j < s.length && (s[j] === ']' || s[j] === '}')) continue; // trailing comma — drop it
             }
             out += c;
         }
@@ -519,7 +607,7 @@
             try { JSON.parse(text); out.jsonValid = true; }
             catch (e) {
                 out.jsonValid = false; out.jsonError = String((e && e.message) || e);
-                try { JSON.parse(escapeRawControlsInStrings(text.replace(/,\s*([\]}])/g, '$1'))); out.jsonFixable = true; }
+                try { JSON.parse(escapeRawControlsInStrings(stripTrailingCommasOutsideStrings(text))); out.jsonFixable = true; }
                 catch (e2) { out.jsonFixable = false; }
             }
         }
@@ -547,7 +635,7 @@
     function repairDocJson(text) {
         text = String(text ?? '');
         try { JSON.parse(text); return { changed: false, text }; } catch (e) { /* repair below */ }
-        const fixed = escapeRawControlsInStrings(text.replace(/,\s*([\]}])/g, '$1'));
+        const fixed = escapeRawControlsInStrings(stripTrailingCommasOutsideStrings(text));
         try { JSON.parse(fixed); return { changed: fixed !== text, text: fixed }; }
         catch (e) { return { changed: false, text, error: String((e && e.message) || e) }; }
     }
@@ -564,7 +652,7 @@
             arr = JSON.parse(raw);
         } catch (e1) {
             // Repair passes for the common LLM JSON slips, tried in order.
-            let repaired = raw.replace(/,\s*([\]}])/g, '$1');   // 1) trailing commas
+            let repaired = stripTrailingCommasOutsideStrings(raw);   // 1) trailing commas (string-aware)
             try { arr = JSON.parse(repaired); }
             catch (e2) {
                 // 2) literal newlines/tabs inside string values (the #1 slip:
@@ -600,7 +688,8 @@
         return out.trim();
     }
 
-    function splitThinking(text) {
+    // Think extraction for ONE segment that contains no docedits block.
+    function splitThinkingSegment(text) {
         let think = '';
         let rest = String(text || '').replace(/<(think|thinking|reasoning)>([\s\S]*?)<\/\1>/gi, (m0, tag, body) => {
             const b = String(body).trim();
@@ -615,6 +704,29 @@
             if (tail) think += (think ? '\n\n' : '') + tail;
             rest = rest.slice(0, open.index);
         }
+        // Orphan closers (a pair that straddled the docedits block leaves its
+        // closing tag stranded in the tail segment) are model sloppiness, not
+        // content — matched pairs were already consumed above. Segments never
+        // contain a docedits block, so this cannot touch edit JSON.
+        rest = rest.replace(/<\/(think|thinking|reasoning)>/gi, '');
+        return { rest: rest.trim(), think: think.trim() };
+    }
+
+    // This extension edits AI-instruction documents, so think-tags legitimately
+    // occur INSIDE docedits strings ({"find": "wrap reasoning in <think>…"}) and
+    // in prose around the block. The old single-pass extraction could (a) eat
+    // ACROSS the block when a pair straddled it, gutting the JSON, or (b) swallow
+    // the whole block into "thinking" after an unclosed prose mention — silently
+    // losing the proposal. Fix at the root: locate the docedits block first (the
+    // SAME span logic the parser uses) and run think extraction only OUTSIDE it.
+    function splitThinking(text) {
+        const src = String(text || '');
+        const blk = findBlock(src, 'docedits');
+        if (!blk) return splitThinkingSegment(src);
+        const head = splitThinkingSegment(src.slice(0, blk.start));
+        const tail = splitThinkingSegment(src.slice(blk.end));
+        const think = [head.think, tail.think].filter(Boolean).join('\n\n');
+        const rest = [head.rest, src.slice(blk.start, blk.end), tail.rest].filter(Boolean).join('\n');
         return { rest: rest.trim(), think: think.trim() };
     }
 
@@ -631,21 +743,32 @@
             .replace(/\u00A0/g, ' ');
     }
 
-    function levenshtein(a, b) {
-        // Works on strings and on arrays of words alike.
+    function levenshtein(a, b, maxDist) {
+        // Works on strings and on arrays of words alike. Optional maxDist: if no
+        // cell in a row can still reach a distance <= maxDist, abort and return
+        // maxDist + 1 (any value strictly over the bound). Results for anything
+        // at or under the bound are IDENTICAL to the unbounded run — the cutoff
+        // only skips candidates that could never qualify anyway, which is what
+        // keeps the fuzzy brute-force fallback fast on large documents.
         const m = a.length, n = b.length;
         if (!m) return n;
         if (!n) return m;
+        const bounded = Number.isFinite(maxDist);
+        if (bounded && Math.abs(m - n) > maxDist) return maxDist + 1;
         let prev = new Array(n + 1);
         let cur = new Array(n + 1);
         for (let j = 0; j <= n; j++) prev[j] = j;
         for (let i = 1; i <= m; i++) {
             cur[0] = i;
             const ai = a[i - 1];
+            let rowMin = cur[0];
             for (let j = 1; j <= n; j++) {
                 const cost = ai === b[j - 1] ? 0 : 1;
-                cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+                const v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+                cur[j] = v;
+                if (v < rowMin) rowMin = v;
             }
+            if (bounded && rowMin > maxDist) return maxDist + 1;
             const tmp = prev; prev = cur; cur = tmp;
         }
         return prev[n];
@@ -669,7 +792,15 @@
         const hay2 = normChars(hay);
         const needle2 = normChars(needle);
         idx = hay2.indexOf(needle2);
-        if (idx >= 0) return { start: idx, end: idx + needle2.length, fuzzy: false, count: 1 };
+        if (idx >= 0) {
+            // Same ambiguity counting as the exact path — a quote-normalized
+            // match can repeat too, and the "1 of N" card warning must not
+            // silently vanish just because the quotes were curly.
+            let count = 1;
+            let p = hay2.indexOf(needle2, idx + needle2.length);
+            while (p !== -1 && count < 9) { count++; p = hay2.indexOf(needle2, p + needle2.length); }
+            return { start: idx, end: idx + needle2.length, fuzzy: false, count };
+        }
 
         // 3) fuzzy sliding window over words (Levenshtein on word arrays).
         // Documents can be 30k+ chars, so a brute-force scan of every start is
@@ -729,7 +860,13 @@
             for (const w of widths) {
                 if (s + w > hayWords.length) continue;
                 const cand = hayWords.slice(s, s + w);
-                const dist = levenshtein(cand, needleWords);
+                // Only candidates that can still reach the 0.78 floor AND beat the
+                // current best matter; everything else may abort early. dist <= bound
+                // <=> sim >= simFloor, so skipped candidates were never winners.
+                const simFloor = best ? Math.max(0.78, best.sim) : 0.78;
+                const bound = Math.floor((1 - simFloor) * Math.max(cand.length, nw));
+                const dist = levenshtein(cand, needleWords, bound);
+                if (dist > bound) continue;
                 const sim = 1 - dist / Math.max(cand.length, nw);
                 if (!best || sim > best.sim) best = { sim, s, w };
             }
@@ -989,7 +1126,7 @@
                                 if (onPartial) onPartial(acc, reasoning);
                             }
                         } catch (se) { if (!stopRequested) throw se; }
-                        if (reasoning && !/<think|<reasoning/i.test(acc)) {
+                        if (reasoning && !/^\s*<(think|thinking|reasoning)>/i.test(acc)) {
                             return '<think>' + reasoning + '</think>\n' + acc;
                         }
                         return acc;
@@ -1060,6 +1197,23 @@
         return parts.join('\n\n');
     }
 
+    // Token estimate of docBlock/refBlock WITHOUT building the string. The old
+    // path concatenated the full document (and every reference) into a fresh
+    // string on every updateSub just to read .length — megabytes of allocation
+    // per header refresh on big docs. Pure arithmetic over the same lengths;
+    // a test pins it equal to estTokens(docBlock(doc)) so it cannot drift.
+    function blockTokensFor(doc, isRef) {
+        const body = String(doc.text || '');
+        const name = String(doc.name || 'Untitled');
+        const bodyLen = body.length
+            ? body.length
+            : (isRef ? '(this reference document is currently empty)' : '(the document is currently empty)').length;
+        const headLen = (isRef ? '[REFERENCE DOCUMENT: ' : '[DOCUMENT: ').length + name.length + ']\n'.length;
+        const tailLen = (isRef ? '\n[/REFERENCE DOCUMENT]' : '\n[/DOCUMENT]').length;
+        const total = headLen + bodyLen + tailLen;
+        return Math.max(1, Math.ceil(total / 4));
+    }
+
     // Keep the last `depth` REAL turns (user/assistant); [STATE] notes ride
     // along with whichever turns they sit between instead of counting against
     // the budget, so a run of "Applied: ..." notes can't push actual
@@ -1125,15 +1279,19 @@
         for (let i = base.length - 1; i >= 0; i--) {
             if (base[i].role === 'user') { lastUser = i; break; }
         }
+        const ctxExtra = [contextBlocks(doc), pendingProposalsBlock()].filter(Boolean).join('\n\n');
         base.forEach((h, i) => {
             let content = String(h.content ?? '');
             if (h.role === 'note') { msgs.push({ role: 'user', content: '[STATE] ' + content }); return; }
-            if (i === lastUser) {
-                const extra = [contextBlocks(doc), pendingProposalsBlock()].filter(Boolean).join('\n\n');
-                content = extra + '\n\n' + content;
-            }
+            if (i === lastUser) content = ctxExtra + '\n\n' + content;
             msgs.push({ role: h.role === 'assistant' ? 'assistant' : 'user', content });
         });
+        // The document must ALWAYS be in the request. If the window contains no
+        // user turn to carry it (possible after per-message deletes), append the
+        // context blocks as their own user message rather than sending the model
+        // a document-editing task with no document — that guarantees hallucinated
+        // "find" quotes and makes the context meter a lie.
+        if (lastUser === -1) msgs.push({ role: 'user', content: ctxExtra });
         return msgs;
     }
 
@@ -1145,8 +1303,8 @@
         if (!doc) return { system: 0, doc: 0, refs: [], refsTotal: 0, history: 0, turns: 0, notes: 0, proposals: 0, winLen: 0, total: 0 };
         const preset = presetForDoc(doc);
         const system = estTokens(String(preset?.prompt || '').trim() + '\n\n' + DOCEDITS_PROTOCOL);
-        const docTok = estTokens(docBlock(doc));
-        const refs = refsOf(doc).map(r => ({ name: r.name || 'Untitled', tokens: estTokens(refBlock(r)) }));
+        const docTok = blockTokensFor(doc, false);
+        const refs = refsOf(doc).map(r => ({ name: r.name || 'Untitled', tokens: blockTokensFor(r, true) }));
         const refsTotal = refs.reduce((n, r) => n + r.tokens, 0);
         const depth = Math.max(2, Number(settings.historyDepth) || 16);
         const win = pickContextWindow(sess(doc).history, depth);
@@ -1168,6 +1326,10 @@
         if (!userText || running) return;
         const doc = activeDoc();
         if (!doc) { toast('Create or import a document first (+ New).', 'warning'); return; }
+        // Clear the composer only now that the send is actually happening — a
+        // failed send must never eat the typed message.
+        const inp = el('la_input');
+        if (inp && inp.value.trim() === userText) inp.value = '';
         pushHistory(doc, 'user', userText);
         renderHistory(true);
         await runGeneration();
@@ -1202,7 +1364,35 @@
 
             busy.remove();
             if (activeDoc()?.id !== docAtStart || sess(activeDoc())?.id !== sessAtStart) {
-                addBubble('note', 'Reply discarded \u2014 document or session switched during generation.');
+                // Do NOT throw the generation away — the user paid for it. Write it
+                // into the session it was generated FOR (which still exists in
+                // settings even if no longer active), stage no edits (pendingEdits
+                // belongs to the now-active document), and say where it went.
+                const origDoc = settings.docs.find(d => d.id === docAtStart);
+                const origSess = origDoc && Array.isArray(origDoc.sessions)
+                    ? origDoc.sessions.find(sx => sx.id === sessAtStart) : null;
+                if (origSess && (reply || think)) {
+                    if (Number.isInteger(opts.swipeIdx)) {
+                        const entry = origSess.history[opts.swipeIdx];
+                        if (entry && entry.role === 'assistant') {
+                            ensureSwipes(entry);
+                            entry.swipes.push({ content: reply, think: think || '' });
+                            entry.swipeId = entry.swipes.length - 1;
+                            entry.content = reply;
+                            entry.think = think || '';
+                        }
+                    } else {
+                        const entry = { role: 'assistant', content: reply };
+                        if (think) entry.think = String(think).slice(0, 20000);
+                        entry.swipes = [{ content: entry.content, think: entry.think || '' }];
+                        entry.swipeId = 0;
+                        appendToSession(origSess, entry);
+                    }
+                    persist();
+                    addBubble('note', 'You switched during generation \u2014 the reply was saved to "' + (origDoc?.name || '?') + ' \u00B7 ' + (origSess.name || 'Session') + '" (no edits staged here). Switch back to review it.');
+                } else {
+                    addBubble('note', 'Reply discarded \u2014 document or session switched during generation and nothing usable was received.');
+                }
                 return;
             }
             if (stopRequested) {
@@ -1232,7 +1422,17 @@
 
             const parsed = parseDocEdits(reply);
             if (parsed.error) {
-                addBubble('note', 'docedits error: ' + parsed.error + ' \u2014 ask the agent to resend valid JSON.');
+                // Feed the failure to the AGENT as a persistent [STATE] note (same
+                // loop as apply-failures, v0.11.9) — it resends valid JSON next turn
+                // by itself instead of the error dying as a transient bubble.
+                pushHistory(doc, 'note', '\u26A0 Your docedits block could not be parsed (' + parsed.error + '). Resend ONE valid docedits JSON block: double-quoted strings, every line break inside a value written as \\n, no comments, no trailing commas, no markdown fences.');
+                renderHistory();
+            } else if (!parsed.edits.length && !stopRequested && /<docedits/i.test(reply) && !/<\/docedits>/i.test(reply)) {
+                // An opening tag with no closer = the block was cut off, almost
+                // always the reply hitting Max tokens. Silently showing "no edits"
+                // hides real data loss from both the user and the agent.
+                pushHistory(doc, 'note', '\u26A0 Your reply contains an OPENED docedits block with no closing tag \u2014 it was cut off (likely the Max tokens ceiling) and none of it could be applied. Resend the complete block, split into fewer/smaller edits if needed.');
+                renderHistory();
             }
             // The agent can mark earlier still-pending proposals it is replacing.
             let supersededCount = 0;
@@ -1243,10 +1443,10 @@
             if (Number.isInteger(opts.swipeIdx)) {
                 // A swipe is an ALTERNATE version of one reply, not a new idea:
                 // replace that reply's cards (drop its old batch, stage the new).
-                pendingEdits = pendingEdits.filter(e => e.status !== 'pending' || e.fromSwipe !== opts.swipeIdx);
+                pendingEdits = pendingEdits.filter(e => e.status !== 'pending' || !(e.fromSess === sessAtStart && e.fromMsg === opts.swipeIdx));
                 if (parsed.edits.length) {
                     editBatchSeq++;
-                    for (const e of parsed.edits) { e.batch = editBatchSeq; e.fromSwipe = opts.swipeIdx; }
+                    for (const e of parsed.edits) { e.batch = editBatchSeq; e.fromSess = sessAtStart; e.fromMsg = opts.swipeIdx; }
                     pendingEdits = pendingEdits.concat(parsed.edits);
                     editsCollapsed = false;
                 }
@@ -1255,7 +1455,10 @@
                 // so you can discuss, get a refinement, and compare both.
                 const stillPending = pendingEdits.filter(e => e.status === 'pending').length;
                 editBatchSeq++;
-                for (const e of parsed.edits) e.batch = editBatchSeq;
+                const srcSess = sess(doc);
+                let srcIdx = srcSess.history.length - 1;
+                while (srcIdx >= 0 && srcSess.history[srcIdx].role !== 'assistant') srcIdx--;
+                for (const e of parsed.edits) { e.batch = editBatchSeq; e.fromSess = srcSess.id; e.fromMsg = srcIdx; }
                 pendingEdits = pendingEdits.concat(parsed.edits);
                 editsCollapsed = false;
                 if (stillPending) {
@@ -1297,12 +1500,25 @@
             persist();
             renderHistory();
             const pe = parseDocEdits(entry.content);
-            pendingEdits = pendingEdits.filter(e => e.status !== 'pending' || e.fromSwipe !== idx);
+            const sid = sess(doc).id;
+            pendingEdits = pendingEdits.filter(e => e.status !== 'pending' || !(e.fromSess === sid && e.fromMsg === idx));
             if (pe.edits.length) {
-                editBatchSeq++;
-                for (const e of pe.edits) { e.batch = editBatchSeq; e.fromSwipe = idx; }
-                pendingEdits = pendingEdits.concat(pe.edits);
-                editsCollapsed = false;
+                // Never re-stage a proposal from this reply that was already
+                // consumed (applied/skipped/superseded): navigating away and back
+                // used to resurrect an applied append as a fresh pending card, and
+                // "Apply all" would then apply it a SECOND time. The consumed card
+                // is still visible with its status; only genuinely-pending ones
+                // come back.
+                const consumed = new Set(pendingEdits
+                    .filter(e => e.fromSess === sid && e.fromMsg === idx && e.status !== 'pending')
+                    .map(e => editIdentityKey(e)));
+                const fresh = pe.edits.filter(e => !consumed.has(editIdentityKey(e)));
+                if (fresh.length) {
+                    editBatchSeq++;
+                    for (const e of fresh) { e.batch = editBatchSeq; e.fromSess = sid; e.fromMsg = idx; }
+                    pendingEdits = pendingEdits.concat(fresh);
+                    editsCollapsed = false;
+                }
             }
             renderEditCards();
             return;
@@ -1322,9 +1538,9 @@
         // (e.g. after an error), just generate for it.
         if (h.length && h[h.length - 1].role === 'user') { await runGeneration(); return; }
         if (i < 0) { toast('Nothing to retry yet.', 'warning'); return; }
+        pendingEdits = adjustStampsForSplice(pendingEdits, sess(doc).id, i, Infinity);
         h.splice(i);
         persist();
-        pendingEdits = [];
         renderHistory();
         renderEditCards();
         await runGeneration();
@@ -1338,9 +1554,9 @@
         let i = h.length - 1;
         while (i >= 0 && h[i].role !== 'user') i--;
         if (i < 0) { toast('Nothing to delete.', 'warning'); return; }
+        pendingEdits = adjustStampsForSplice(pendingEdits, sess(doc).id, i, Infinity);
         h.splice(i);
         persist();
-        pendingEdits = [];
         renderHistory();
         renderEditCards();
     }
@@ -1353,9 +1569,9 @@
         if (!h[idx] || h[idx].role !== 'user') return;
         if (idx < h.length - 1 && !confirm('Edit this message? Everything after it in this conversation will be removed.')) return;
         const text = h[idx].content;
+        pendingEdits = adjustStampsForSplice(pendingEdits, sess(doc).id, idx, Infinity);
         h.splice(idx);
         persist();
-        pendingEdits = [];
         renderHistory();
         renderEditCards();
         const input = el('la_input');
@@ -1370,9 +1586,9 @@
         const h = sess(doc).history;
         if (!h[idx]) return;
         if (!confirm('Delete this message from the agent conversation?')) return;
+        pendingEdits = adjustStampsForSplice(pendingEdits, sess(doc).id, idx, 1);
         h.splice(idx, 1);
         persist();
-        pendingEdits = [];
         renderHistory();
         renderEditCards();
     }
@@ -1383,9 +1599,9 @@
         if (!doc) return;
         const cur = sess(doc);
         if (!confirm('Clear session "' + cur.name + '" of "' + doc.name + '"? The document itself is untouched.')) return;
+        pendingEdits = adjustStampsForSplice(pendingEdits, cur.id, 0, Infinity);
         cur.history = [];
         persist();
-        pendingEdits = [];
         renderHistory();
         renderEditCards();
     }
@@ -1545,10 +1761,11 @@
                 backdrop.style.display = 'none';
                 box.style.display = 'none';
                 box._bound = null;
+                overlayClosed('la_viewer_win');
             };
             closeBtn.addEventListener('click', doClose);
             document.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape' && box.style.display !== 'none') doClose();
+                if (e.key === 'Escape' && box.style.display !== 'none' && overlayIsTop('la_viewer_win')) doClose();
             });
             // Deliberately NOT closing on backdrop tap: a stray tap must never
             // eat a 20k-char paste. Close button or Esc only.
@@ -1602,6 +1819,7 @@
                     backdrop.style.display = 'none';
                     box.style.display = 'none';
                     box._bound = null;
+                    overlayClosed('la_viewer_win');
                 }
             });
 
@@ -1633,6 +1851,7 @@
         box._updateCount();
         backdrop.style.display = 'block';
         box.style.display = 'flex';
+        overlayOpened('la_viewer_win');
     }
 
     // After Apply/Undo: if the editor window is open on this document and the
@@ -1725,6 +1944,13 @@
         if (!doc) return;
         const cur = sess(doc);
         if (!confirm('Delete session "' + cur.name + '" (' + cur.history.length + ' message(s))? The document itself is untouched.')) return;
+        // Proposals staged from this session stay applicable (doc-scoped, v0.11.5)
+        // but their stamps must be neutralized: nextSessId can REUSE this id, and a
+        // stale (sess, msg) stamp would then collide with the new session's swipe
+        // filter and wrongly drop or dedupe unrelated cards.
+        for (const e of pendingEdits) {
+            if (e && e.fromSess === cur.id) { e.fromSess = null; e.fromMsg = -1; }
+        }
         doc.sessions = doc.sessions.filter(sx => sx.id !== cur.id);
         if (!doc.sessions.length) doc.sessions.push({ id: 1, name: 'Session 1', history: [] });
         doc.activeSessionId = doc.sessions[0].id;
@@ -1752,7 +1978,8 @@
     function newWorldbook() {
         const v = prompt('Name for the new worldbook:', 'Worldbook');
         if (v === null) return;
-        const d = makeDoc((v.trim() || 'Worldbook') + (/\.json$/i.test(v) ? '' : '.json'), '[]');
+        const base = v.trim() || 'Worldbook';
+        const d = makeDoc(base + (/\.json$/i.test(base) ? '' : '.json'), '[]');
         d.presetId = PRESET_WB_ID;
         settings.docs.push(d);
         setActiveDoc(d.id);
@@ -2062,9 +2289,7 @@
         });
         el('la_send').addEventListener('click', () => {
             if (running) { requestStop(); return; }
-            const t = el('la_input').value;
-            el('la_input').value = '';
-            send(t);
+            send(el('la_input').value);
         });
         el('la_input').addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -2809,7 +3034,7 @@
         let data;
         try { data = JSON.parse(raw); }
         catch (e) {
-            try { data = JSON.parse(raw.replace(/,\s*([\]}])/g, '$1')); }
+            try { data = JSON.parse(stripTrailingCommasOutsideStrings(raw)); }
             catch (e2) { return { entries: [], error: 'not valid JSON: ' + e2.message }; }
         }
         let arr = null;
@@ -2993,7 +3218,7 @@
             const closeBtn = document.createElement('button');
             closeBtn.textContent = 'Close';
             closeBtn.style.cssText = 'cursor:pointer;border:1px solid rgba(255,255,255,0.35);background:rgba(220,90,90,0.3);color:inherit;border-radius:6px;padding:8px 14px;font-size:0.9em;flex:0 0 auto;';
-            const doClose = () => { backdrop.style.display = 'none'; box.style.display = 'none'; };
+            const doClose = () => { backdrop.style.display = 'none'; box.style.display = 'none'; overlayClosed(id); };
             closeBtn.addEventListener('click', doClose);
             head.appendChild(title);
             head.appendChild(closeBtn);
@@ -3007,7 +3232,7 @@
             document.body.appendChild(box);
 
             document.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape' && box.style.display !== 'none') doClose();
+                if (e.key === 'Escape' && box.style.display !== 'none' && overlayIsTop(id)) doClose();
             });
             makeDraggable(box, head);
         }
@@ -3021,7 +3246,8 @@
         el(id + '_title').textContent = String(opts.title || '');
         backdrop.style.display = 'block';
         box.style.display = 'flex';
-        return { box, backdrop, body: el(id + '_body'), close: () => { backdrop.style.display = 'none'; box.style.display = 'none'; } };
+        overlayOpened(id);
+        return { box, backdrop, body: el(id + '_body'), close: () => { backdrop.style.display = 'none'; box.style.display = 'none'; overlayClosed(id); } };
     }
 
     // Apply text changes to one or more documents as a single undoable batch,
@@ -3573,13 +3799,15 @@
     // Engine internals exposed for automated testing (harmless in production).
     try {
         globalThis.__loreAgentDebug = {
-            VERSION, findBlock, parseDocEdits, stripBlocks, splitThinking,
+            VERSION, findBlock, parseDocEdits, stripBlocks, splitThinking, splitThinkingSegment,
             normChars, levenshtein, locate, applyEditToText, grow, mimeForName, resolveDocByName,
             ensureDocShape, sess, parseWorldbook, lintWorldbook, worldbookToST, docLooksLikeWorldbook,
             normalizePosition, positionToST,
             numOr, estTokens, worldbookTokenStats, serializeWorldbook, pickContextWindow, contextTokenBreakdown,
             parseSupersede, formatPendingProposals,
             docLint, collapseInlineSpaces, repairDocJson,
+            stripTrailingCommasOutsideStrings, escapeRawControlsInStrings,
+            adjustStampsForSplice, editIdentityKey, buildMessages, blockTokensFor, docBlock, refBlock,
             getSettings: () => settings,
             getPendingEdits: () => pendingEdits,
         };

@@ -49,6 +49,21 @@ const goodNL = '<docedits>[{"find": "a\\nb", "replace": "c", "reason": "ok"}]</d
 const pGood = D.parseDocEdits(goodNL);
 ok(pGood.edits.length === 1 && pGood.edits[0].find === 'a\nb', 'already-escaped \\n is not double-escaped', pGood.edits[0]);
 
+// v0.12.0: trailing-comma repair is STRING-AWARE — ", ]" and ", }" are common
+// inside instruction-doc text being edited; the old blind regex mutated them.
+console.log('== stripTrailingCommasOutsideStrings ==');
+ok(JSON.parse(D.stripTrailingCommasOutsideStrings('[1, 2, ]')).length === 2, 'real trailing comma stripped');
+ok(JSON.parse(D.stripTrailingCommasOutsideStrings('["a, ]", ]'))[0] === 'a, ]', '", ]" INSIDE a string is content, not a trailing comma');
+const nested = D.stripTrailingCommasOutsideStrings('{"a": [1, 2, ], "b": {"c": 3, }, }');
+ok(JSON.parse(nested).a.length === 2 && JSON.parse(nested).b.c === 3, 'nested trailing commas all stripped');
+ok(JSON.parse(D.stripTrailingCommasOutsideStrings('["x\\", ]", ]'))[0] === 'x", ]', 'escaped quote inside string does not end string-tracking');
+// end-to-end through the real parser
+const pComma = D.parseDocEdits('<docedits>[{"find":"a","replace":"rules: stop, ]","reason":"r"},]</docedits>');
+ok(pComma.edits.length === 1 && pComma.edits[0].replace === 'rules: stop, ]', 'edit value containing ", ]" survives repair end-to-end', pComma.edits[0]);
+// v0.12.0: full C0 control repair (models paste real form-feeds/control bytes)
+const pCtl = D.parseDocEdits('<docedits>[{"find": "a\fb\bc\u0001d", "replace": "clean", "reason": "r"}]</docedits>');
+ok(pCtl.edits.length === 1 && pCtl.edits[0].find === 'a\fb\bc\u0001d', 'raw \\f, \\b and \\u0001 inside strings repaired, values preserved', pCtl.error || pCtl.edits[0]);
+
 console.log('== stripBlocks ==');
 const stripped = D.stripBlocks(poisoned);
 ok(stripped.includes('[proposed edits below]') && !stripped.includes('"append"'), 'block replaced with placeholder in display text');
@@ -59,6 +74,25 @@ const st1 = D.splitThinking('<think>plan things</think>Answer here');
 ok(st1.rest === 'Answer here' && st1.think === 'plan things', 'closed think tag split');
 const st2 = D.splitThinking('partial <reasoning>still going');
 ok(st2.rest === 'partial' && st2.think === 'still going', 'unclosed tag mid-stream treated as thinking', st2);
+
+// v0.12.0: think extraction is BLOCK-PROTECTED — this tool edits AI-instruction
+// docs, so think-tags legitimately appear inside edit JSON and in prose around
+// the block. The block span is located first; extraction runs only outside it.
+const stJson = 'Plan.\n<docedits>\n[{"find": "wrap it in <think> tags", "replace": "wrap it in <think>/<reasoning> tags", "reason": "r"}]\n</docedits>\ndone';
+const st3 = D.splitThinking(stJson);
+ok(/<docedits>/i.test(st3.rest) && /<\/docedits>/i.test(st3.rest), 'docedits block survives think extraction');
+const st3p = D.parseDocEdits(st3.rest);
+ok(st3p.edits.length === 1 && st3p.edits[0].find === 'wrap it in <think> tags', 'think-tag inside a JSON string is data, not reasoning', st3p.edits[0]);
+ok(st3.think === '', 'nothing falsely harvested as thinking', st3.think);
+const st4 = D.splitThinking('<think>plan first</think>Here:\n<docedits>[{"append":true,"replace":"x","reason":"r"}]</docedits>\nafter');
+ok(st4.think === 'plan first' && /after/.test(st4.rest) && D.parseDocEdits(st4.rest).edits.length === 1, 'leading closed reasoning still split; block + tail intact', st4);
+const st5 = D.splitThinking('<reasoning>still open <docedits>[{"append":true,"replace":"y","reason":"r"}]</docedits>');
+ok(D.parseDocEdits(st5.rest).edits.length === 1 && st5.think === 'still open', 'unclosed opener before the block no longer swallows it', st5);
+const st6 = D.splitThinking('<think>a <docedits>[{"append":true,"replace":"z","reason":"r"}]</docedits> b</think>');
+ok(D.parseDocEdits(st6.rest).edits.length === 1, 'pair straddling the block cannot gut the JSON', st6.rest);
+ok(!/<\/think>/i.test(st6.rest), 'stranded closer from the straddle is cleaned out of prose', st6.rest);
+const st7 = D.splitThinkingSegment('<think>x</think>y');
+ok(st7.rest === 'y' && st7.think === 'x', 'segment splitter (no-block path) unchanged');
 
 console.log('== locate ==');
 const hayS = 'alpha beta gamma. alpha beta gamma. delta.';
@@ -85,6 +119,22 @@ ok(lf && lf.fuzzy && lf.sim >= 0.78, 'fuzzy match survives misquote on ' + big.l
 ok(lf && big.slice(lf.start, lf.end).includes('drachms drawn from the caster'), 'fuzzy range covers the real paragraph');
 ok(ms < 1500, 'fuzzy locate fast enough (' + ms + 'ms)');
 ok(D.locate(big, 'completely absent gibberish qqq zzz www xxx yyy') === null, 'absent text -> null, no false positive');
+
+// v0.12.0: the quote-normalized exact path counts occurrences too — the
+// "1 of N" ambiguity warning must not vanish just because quotes were curly.
+const hayNorm = 'She said \u201Chello there\u201D and left. She said \u201Chello there\u201D and left.';
+const lN = D.locate(hayNorm, 'She said "hello there" and left.');
+ok(lN && !lN.fuzzy && lN.count === 2, 'normalized match reports ambiguity count like the exact path', lN);
+
+// v0.12.0: bounded levenshtein (early exit) is result-identical at/under the bound
+console.log('== bounded levenshtein ==');
+ok(D.levenshtein('kitten', 'sitting') === 3, 'unbounded baseline');
+ok(D.levenshtein('kitten', 'sitting', 10) === 3, 'generous bound -> identical distance');
+ok(D.levenshtein('abc', 'abd', 1) === 1, 'distance exactly at the bound is preserved');
+ok(D.levenshtein('kitten', 'sitting', 1) > 1, 'bound exceeded -> early exit signals > maxDist');
+ok(D.levenshtein('a', 'abcdefg', 2) > 2, 'length-difference shortcut respects the bound');
+const wordsA = ['the','blood','cost','of','a','casting'], wordsB = ['the','blood-cost','of','a','casting'];
+ok(D.levenshtein(wordsA, wordsB) === D.levenshtein(wordsA, wordsB, 3), 'word-array mode identical under bound');
 
 console.log('== applyEditToText ==');
 const doc1 = '# Title\n\n## Magic\nFire only.\n\n## Cast\nNobody yet.\n';
@@ -188,18 +238,22 @@ setTimeout(() => {
 
     // swipe replaces that reply's batch instead of stacking
     console.log('== swipe replaces, not stacks ==');
-    function simSwipe(pending, idx, newEdits, seq) {
-        pending = pending.filter(e => e.status !== 'pending' || e.fromSwipe !== idx);
+    function simSwipe(pending, sid, idx, newEdits, seq) {
+        pending = pending.filter(e => e.status !== 'pending' || !(e.fromSess === sid && e.fromMsg === idx));
         if (newEdits.length) {
             seq.n++;
-            for (const e of newEdits) { e.batch = seq.n; e.fromSwipe = idx; }
+            for (const e of newEdits) { e.batch = seq.n; e.fromSess = sid; e.fromMsg = idx; }
             pending = pending.concat(newEdits);
         }
         return pending;
     }
-    let sp = [{ id: 'x', status: 'pending', fromSwipe: 5, batch: 1 }];
-    sp = simSwipe(sp, 5, [{ id: 'y', status: 'pending' }], seq);
+    let sp = [{ id: 'x', status: 'pending', fromSess: 1, fromMsg: 5, batch: 1 }];
+    sp = simSwipe(sp, 1, 5, [{ id: 'y', status: 'pending' }], seq);
     ok(sp.length === 1 && sp[0].id === 'y', 'swiping the same reply replaces its cards');
+    // v0.12.0: the filter is (session, message) scoped — a swipe in ANOTHER
+    // session at the same index must not touch this session's cards.
+    sp = simSwipe(sp, 2, 5, [{ id: 'z', status: 'pending' }], seq);
+    ok(sp.length === 2 && sp.some(e => e.id === 'y') && sp.some(e => e.id === 'z'), 'same index in a different session does not nuke the other session\u2019s cards');
 
     // v0.8.0: worldbook engine
     console.log('== worldbook parse ==');
@@ -367,6 +421,57 @@ setTimeout(() => {
     ok(cb.proposals === 0, 'no pending proposals in this test', cb.proposals);
     ok(D.contextTokenBreakdown(null).total === 0, 'null doc -> 0 total');
 
+    // v0.12.0: the document must ALWAYS reach the model
+    console.log('== buildMessages: document always injected ==');
+    const bmDoc = { id: 'bm1', name: 'BM Doc', text: 'The single rule.', presetId: '', refs: [] };
+    D.ensureDocShape(bmDoc);
+    const bmSess = D.sess(bmDoc);
+    bmSess.history.push({ role: 'user', content: 'hi' }, { role: 'assistant', content: 'yo' });
+    const m1 = D.buildMessages(bmDoc);
+    const lastUserMsg = [...m1].reverse().find(m => m.role === 'user');
+    ok(lastUserMsg && lastUserMsg.content.includes('[DOCUMENT: BM Doc]'), 'normal path: last user turn carries the document');
+    bmSess.history.length = 0;
+    bmSess.history.push({ role: 'assistant', content: 'orphan reply' });
+    const m2 = D.buildMessages(bmDoc);
+    ok(m2.some(m => m.role === 'user' && m.content.includes('[DOCUMENT: BM Doc]')), 'no user turn in window -> document appended as its own user message');
+    ok(m2.some(m => String(m.content).includes('The single rule.')), 'document body actually present in the request');
+
+    // v0.12.0: context meter arithmetic (no more full-doc string concat per repaint)
+    console.log('== blockTokensFor ==');
+    const tinyDoc = { name: 'T', text: 'hello world' };
+    ok(D.blockTokensFor(tinyDoc, false) === D.estTokens(D.docBlock(tinyDoc)), 'doc estimate === estTokens(docBlock)');
+    ok(D.blockTokensFor(tinyDoc, true) === D.estTokens(D.refBlock(tinyDoc)), 'ref estimate === estTokens(refBlock)');
+    const emptyDoc = { name: '', text: '' };
+    ok(D.blockTokensFor(emptyDoc, false) === D.estTokens(D.docBlock(emptyDoc)), 'empty doc + Untitled fallback identical');
+    ok(D.blockTokensFor(emptyDoc, true) === D.estTokens(D.refBlock(emptyDoc)), 'empty ref placeholder identical');
+
+    // v0.12.0: provenance stamps follow history splices
+    console.log('== adjustStampsForSplice ==');
+    const mkE = (sid, msg, id) => ({ id, status: 'pending', fromSess: sid, fromMsg: msg });
+    let ax = [mkE(1, 2, 'a'), mkE(1, 5, 'b'), mkE(2, 5, 'c'), { id: 'd', status: 'pending' }];
+    ax = D.adjustStampsForSplice(ax, 1, 3, Infinity);
+    ok(ax.map(e => e.id).join(',') === 'a,c,d', 'tail splice drops only this session\u2019s edits at/after the cut', ax.map(e => e.id));
+    let ay = [mkE(1, 2, 'a'), mkE(1, 4, 'b'), mkE(1, 7, 'c')];
+    ay = D.adjustStampsForSplice(ay, 1, 4, 1);
+    ok(ay.length === 2 && ay[0].fromMsg === 2 && ay[1].id === 'c' && ay[1].fromMsg === 6, 'single delete drops that message\u2019s edits, shifts later stamps down', ay);
+    let az = [mkE(1, 0, 'a'), mkE(1, 3, 'b')];
+    az = D.adjustStampsForSplice(az, 1, 0, 2);
+    ok(az.length === 1 && az[0].id === 'b' && az[0].fromMsg === 1, 'history-cap front splice shifts survivors', az);
+    const aw = [{ id: 'x', status: 'pending', fromSess: null, fromMsg: -1 }, mkE(2, 1, 'y')];
+    const aw2 = D.adjustStampsForSplice(aw, 1, 0, Infinity);
+    ok(aw2.length === 2, 'neutralized and other-session stamps pass through untouched', aw2);
+
+    // v0.12.0: swipe re-navigation dedupe — an already-APPLIED edit from this
+    // (session, message) must not be resurrected as a fresh pending card.
+    console.log('== swipe restage dedupe ==');
+    const applied = { type: 'append', replace: 'x', docName: null, status: 'applied', fromSess: 1, fromMsg: 5 };
+    const reSw = [{ type: 'append', replace: 'x' }, { type: 'replace', find: 'a', replace: 'b' }];
+    const consumed = new Set([applied].filter(e => e.fromSess === 1 && e.fromMsg === 5 && e.status !== 'pending').map(e => D.editIdentityKey(e)));
+    const fresh = reSw.filter(e => !consumed.has(D.editIdentityKey(e)));
+    ok(fresh.length === 1 && fresh[0].type === 'replace', 'applied append is not re-staged; genuinely new edit still is', fresh);
+    ok(D.editIdentityKey({ type: 'append', replace: 'x', status: 'applied', batch: 9, fromSess: 3, fromMsg: 1 }) === D.editIdentityKey({ type: 'append', replace: 'x' }), 'identity ignores bookkeeping fields');
+    ok(D.editIdentityKey({ type: 'replace', find: 'a', replace: 'b' }) !== D.editIdentityKey({ type: 'replace', find: 'a', replace: 'b', all: true }), 'global-replace flag is part of identity');
+
     // supersede parsing + pending-proposals awareness (agent parity with copilot)
     console.log('== supersede parsing ==');
     ok(JSON.stringify(D.parseSupersede('<supersede>1</supersede>')) === '[1]', 'single number');
@@ -434,3 +539,120 @@ console.log('== pending block: global-replace label ==');
 const ppAllEdit = D.formatPendingProposals([{ status: 'pending', type: 'replace', all: true, reason: 'rename everywhere' }]);
 ok(/Edit 1 \(global replace \(every occurrence\)\): rename everywhere/.test(ppAllEdit), 'all-edit labeled as global replace in the block the agent reads', ppAllEdit);
 ok(/Edit 1 \(replace\):/.test(D.formatPendingProposals([{ status: 'pending', type: 'replace', reason: 'x' }])), 'a normal replace is still labeled "replace"');
+
+// ==================================================================
+// v0.12.0 — deep audit fixes
+// ==================================================================
+
+// splitThinking must never reach inside the docedits block. This tool edits
+// AI-instruction documents, so think-tags legitimately occur in prose AND
+// inside edit strings; the old single-pass extraction gutted the block.
+console.log('== splitThinking: docedits block protection ==');
+const bp1 = D.splitThinking('I added the <thinking> tag rule as asked.\n<docedits>[{"append":true,"replace":"x","reason":"r"}]</docedits>');
+ok(D.parseDocEdits(bp1.rest).edits.length === 1, 'unclosed prose mention BEFORE the block no longer swallows the block', bp1.rest.slice(0, 80));
+const bp2 = D.splitThinking('ok\n<docedits>[{"find":"use <think> tags for reasoning","replace":"use <thinking> tags","reason":"r"}]</docedits>');
+const bp2p = D.parseDocEdits(bp2.rest);
+ok(bp2p.edits.length === 1 && bp2p.edits[0].find === 'use <think> tags for reasoning', 'unclosed think-tag INSIDE a docedits string no longer guts the JSON', bp2p);
+const bp3 = D.splitThinking('<think>plan</think>Done.\n<docedits>[{"find":"wrap in <think>","replace":"wrap in <think> and close with </think>","reason":"r"}]</docedits>');
+const bp3p = D.parseDocEdits(bp3.rest);
+ok(bp3.think === 'plan' && bp3p.edits.length === 1 && bp3p.edits[0].replace.indexOf('</think>') !== -1, 'a closed pair can no longer be matched ACROSS the block (open in find, close in replace)', bp3p.edits[0]);
+const bp4 = D.splitThinking('<think>going\n<docedits>[{"append":true,"replace":"y","reason":"r"}]</docedits>');
+ok(bp4.think.indexOf('going') !== -1 && D.parseDocEdits(bp4.rest).edits.length === 1, 'genuinely unclosed reasoning before the block: swallowed up to the block, block survives', bp4);
+ok(D.splitThinking('<think>partial reasoning never closed').rest === '' && D.splitThinking('<think>partial reasoning never closed').think.indexOf('partial') !== -1, 'no block present: unclosed leading reasoning still fully swallowed (unchanged)');
+const bp5 = D.splitThinking('<think>R</think>\nprose\n<docedits>[{"append":true,"replace":"z","reason":"r"}]</docedits>');
+ok(bp5.think === 'R' && D.parseDocEdits(bp5.rest).edits.length === 1, 'normal leading reasoning + block: both preserved');
+
+// String-aware trailing-comma stripping: the old blind regex rewrote ", ]"
+// INSIDE string values — silent content mutation in every JSON repair pass.
+console.log('== stripTrailingCommasOutsideStrings ==');
+ok(JSON.parse(D.stripTrailingCommasOutsideStrings('[1,2,]'))[1] === 2, 'real trailing comma stripped');
+const stc1 = JSON.parse(D.stripTrailingCommasOutsideStrings('{"a": "list: [1, 2, ]", "b": [3,],}'));
+ok(stc1.a === 'list: [1, 2, ]' && stc1.b.length === 1 && stc1.b[0] === 3, 'comma-bracket inside a STRING preserved; structural trailing commas stripped', stc1);
+const stc2 = JSON.parse(D.stripTrailingCommasOutsideStrings('{"a":"he said \\"hi, ]\\", ok",}'));
+ok(stc2.a === 'he said "hi, ]", ok', 'escaped quotes inside strings do not desync the scanner', stc2.a);
+ok(D.stripTrailingCommasOutsideStrings('{"a":1}') === '{"a":1}', 'already-valid JSON passes through byte-identical');
+const stcE2E = D.parseDocEdits('<docedits>[{"append":true,"replace":"Options: [a, b, ]","reason":"r"},]</docedits>');
+ok(stcE2E.edits.length === 1 && stcE2E.edits[0].replace === 'Options: [a, b, ]', 'END TO END: repair fixes the trailing comma without mutating the value content', stcE2E.edits[0]);
+const stcWB = D.parseWorldbook('[{"name":"N","keys":["k"],"content":"choices: [x, y, ]","strategy":"green"},]');
+ok(stcWB.entries.length === 1 && stcWB.entries[0].content === 'choices: [x, y, ]', 'worldbook tolerant parse also preserves string content', stcWB.entries[0] && stcWB.entries[0].content);
+
+console.log('== escapeRawControlsInStrings: all C0 controls ==');
+const ctl = D.escapeRawControlsInStrings('{"a":"x\fy\bz\u0001"}');
+let ctlParsed = null;
+try { ctlParsed = JSON.parse(ctl); } catch (e) { /* fail below */ }
+ok(ctlParsed && ctlParsed.a === 'x\fy\bz\u0001', 'raw \\f, \\b and other C0 controls inside strings now repair (not just \\n\\r\\t)', ctl);
+
+console.log('== bounded levenshtein (perf guard, identical results) ==');
+ok(D.levenshtein('kitten', 'sitting') === 3, 'unbounded classic = 3');
+ok(D.levenshtein('kitten', 'sitting', 3) === 3, 'bound == true distance: identical result');
+ok(D.levenshtein('kitten', 'sitting', 2) > 2, 'over-bound candidate aborts with a value strictly above the bound');
+ok(D.levenshtein(['a', 'b', 'c'], ['a', 'x', 'c'], 1) === 1, 'word arrays with bound');
+ok(D.levenshtein('abcdefgh', 'z', 2) > 2, 'length-gap shortcut aborts immediately');
+// brute-force fallback path (no alignment votes) must stay fast on Android:
+let bf = '';
+for (let i = 0; i < 700; i++) bf += 'segment ' + i + ' holds ' + (i % 9) + ' units in bay ' + (i % 4) + '\n';
+const bft0 = Date.now();
+const bfr = D.locate(bf, 'wholly absent needle words qqq zzz vvv kkk');
+const bfms = Date.now() - bft0;
+ok(bfr === null, 'absent needle on a vote-less doc -> null (brute-force path)');
+ok(bfms < 400, 'brute-force fallback fast with the early-exit bound (' + bfms + 'ms)');
+
+console.log('== locate: normalized-path ambiguity count ==');
+const lnc = D.locate('\u201Cx y\u201D and \u201Cx y\u201D again', '"x y"');
+ok(lnc && !lnc.fuzzy && lnc.count === 2, 'quote-normalized match counts occurrences like the exact path', lnc);
+
+console.log('== blockTokensFor: allocation-free == built-string estimate ==');
+for (const dd of [{ name: 'A', text: '' }, { name: 'Weird \u2014 name', text: 'hello world' }, { name: undefined, text: 'x'.repeat(999) }]) {
+    ok(D.blockTokensFor(dd, false) === D.estTokens(D.docBlock(dd)), 'doc block tokens match built string (' + (dd.name || 'untitled') + ')', { fast: D.blockTokensFor(dd, false), built: D.estTokens(D.docBlock(dd)) });
+    ok(D.blockTokensFor(dd, true) === D.estTokens(D.refBlock(dd)), 'ref block tokens match built string (' + (dd.name || 'untitled') + ')');
+}
+
+console.log('== buildMessages: the document is ALWAYS injected ==');
+const bmDoc = D.ensureDocShape({ id: 'bm1', name: 'BM Doc', text: 'THE BODY TEXT', presetId: 'seed_pe_maker' });
+D.sess(bmDoc).history.push({ role: 'assistant', content: 'orphan reply with no user turn' });
+const bmA = D.buildMessages(bmDoc);
+const bmLast = bmA[bmA.length - 1];
+ok(bmLast.role === 'user' && bmLast.content.indexOf('[DOCUMENT: BM Doc]') !== -1 && bmLast.content.indexOf('THE BODY TEXT') !== -1, 'no user turn in window -> synthetic trailing user message carries the document', bmLast.content.slice(0, 60));
+D.sess(bmDoc).history.push({ role: 'user', content: 'change it please' });
+const bmB = D.buildMessages(bmDoc);
+const bmBLast = bmB[bmB.length - 1];
+ok(bmBLast.role === 'user' && bmBLast.content.indexOf('[DOCUMENT: BM Doc]') !== -1 && /change it please\s*$/.test(bmBLast.content), 'normal path: document rides the LAST user message (recency)', bmBLast.content.slice(-40));
+ok(bmB.filter(m => m.content.indexOf('[DOCUMENT: BM Doc]') !== -1).length === 1, 'document injected exactly once');
+ok(bmB[0].role === 'system' && bmB[0].content.indexOf('DOCEDITS PROTOCOL') !== -1, 'system carries preset + protocol');
+
+console.log('== adjustStampsForSplice (proposal provenance) ==');
+const stamps = () => ([
+    { id: 'a', fromSess: 1, fromMsg: 2, status: 'pending' },
+    { id: 'b', fromSess: 1, fromMsg: 5, status: 'applied' },
+    { id: 'c', fromSess: 2, fromMsg: 5, status: 'pending' },
+    { id: 'd', status: 'pending' },
+]);
+let asr = D.adjustStampsForSplice(stamps(), 1, 4, Infinity);
+ok(asr.length === 3 && !asr.some(e => e.id === 'b') && asr.some(e => e.id === 'c') && asr.some(e => e.id === 'd'), 'tail splice drops only this session\u2019s edits at/after the cut (other session + unstamped kept)', asr.map(e => e.id));
+asr = D.adjustStampsForSplice(stamps(), 1, 1, 1);
+ok(asr.length === 4 && asr.find(e => e.id === 'a').fromMsg === 1 && asr.find(e => e.id === 'b').fromMsg === 4 && asr.find(e => e.id === 'c').fromMsg === 5, 'single delete before the sources shifts this session\u2019s stamps down by 1 only', asr.map(e => [e.id, e.fromMsg]));
+asr = D.adjustStampsForSplice(stamps(), 1, 2, 1);
+ok(!asr.some(e => e.id === 'a') && asr.find(e => e.id === 'b').fromMsg === 4, 'deleting the source message drops exactly its edits', asr.map(e => e.id));
+asr = D.adjustStampsForSplice(stamps(), 1, 0, 3);
+ok(!asr.some(e => e.id === 'a') && asr.find(e => e.id === 'b').fromMsg === 2, 'cap-splice from the front drops fallen-off sources and shifts the rest', asr.map(e => [e.id, e.fromMsg]));
+asr = D.adjustStampsForSplice(stamps(), 3, 0, Infinity);
+ok(asr.length === 4, 'a splice in an unrelated session touches nothing');
+
+console.log('== editIdentityKey + swipe re-navigation dedupe (double-apply fix) ==');
+ok(D.editIdentityKey({ type: 'append', replace: 'x' }) === D.editIdentityKey({ type: 'append', replace: 'x', status: 'applied', batch: 3, fromMsg: 1 }), 'identity ignores bookkeeping fields');
+ok(D.editIdentityKey({ type: 'replace', find: 'a', replace: 'x' }) !== D.editIdentityKey({ type: 'replace', find: 'a', replace: 'y' }), 'different payload = different proposal');
+ok(D.editIdentityKey({ type: 'replace', find: 'a', replace: 'x' }) !== D.editIdentityKey({ type: 'replace', find: 'a', replace: 'x', all: true }), 'all:true is part of identity');
+function simSwipeNav(pending, sid, idx, parsedEdits, seq2) {
+    // mirrors the existing-swipe branch of swipeAssistant (v0.12.0)
+    pending = pending.filter(e => e.status !== 'pending' || !(e.fromSess === sid && e.fromMsg === idx));
+    const consumed = new Set(pending.filter(e => e.fromSess === sid && e.fromMsg === idx && e.status !== 'pending').map(D.editIdentityKey));
+    const fresh = parsedEdits.filter(e => !consumed.has(D.editIdentityKey(e)));
+    if (fresh.length) { seq2.n++; for (const e of fresh) { e.batch = seq2.n; e.fromSess = sid; e.fromMsg = idx; } pending = pending.concat(fresh); }
+    return pending;
+}
+const seqN = { n: 0 };
+let nav = [{ type: 'append', replace: 'TAIL', status: 'applied (…)', fromSess: 1, fromMsg: 7, batch: 1 }];
+nav = simSwipeNav(nav, 1, 7, [{ type: 'append', replace: 'TAIL', status: 'pending' }], seqN);
+ok(nav.length === 1 && !nav.some(e => e.status === 'pending'), 'an already-APPLIED append is not resurrected as pending on swipe re-navigation (double-apply fix)', nav);
+nav = simSwipeNav(nav, 1, 7, [{ type: 'append', replace: 'TAIL', status: 'pending' }, { type: 'append', replace: 'OTHER', status: 'pending' }], seqN);
+ok(nav.filter(e => e.status === 'pending').length === 1 && nav.find(e => e.status === 'pending').replace === 'OTHER', 'only the genuinely new proposal re-stages beside the consumed one', nav.map(e => [e.replace, e.status]));
