@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.12.1';
+    const VERSION = '0.12.2';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -416,6 +416,58 @@
     // swipe re-navigation from resurrecting an already-applied edit as pending.
     function editIdentityKey(e) {
         return JSON.stringify([e.type, e.find ?? null, e.replace ?? '', e.docName ?? null, e.all === true]);
+    }
+
+    // When a new reply proposes over a still-pending older proposal, mark the
+    // older one superseded MECHANICALLY — do not rely on the model emitting a
+    // <supersede> tag. Only provable conflicts qualify (same target document):
+    //   (a) exact duplicate payload — the re-ask case: user asked again without
+    //       applying, the model re-proposed the same edit; Apply-all used to
+    //       apply the first and fail the second ("find" already consumed) or,
+    //       worse, nest the replacement twice when it contained the find text;
+    //   (b) two find/replace edits with the SAME find — both anchor on the
+    //       first occurrence, so they cannot both succeed in either order;
+    //   (c) an incoming whole-document rewrite — it is the newest full intent
+    //       for that document; a visibly-superseded card is more honest than
+    //       an older edit "applying" and being silently obliterated by the
+    //       rewrite one step later.
+    // NOT conflicts (left to the v0.11.9 failure-note loop): mixed insert vs
+    // replace on the same anchor (insert does not consume it — both can be
+    // wanted), an OLDER pending rewrite vs a newer targeted edit (superseding
+    // the rewrite would silently discard wanted work), rephrased finds
+    // targeting the same text (undecidable mechanically — the supersede tag
+    // the agent is taught remains the mechanism for those).
+    // Pure: compares incoming (not yet staged) against existing and returns
+    // the existing edits to mark; docKeyOf maps an edit to its target-doc key.
+    function findAutoSuperseded(existing, incoming, docKeyOf) {
+        const out = [];
+        for (const p of (existing || [])) {
+            if (!p || p.status !== 'pending') continue;
+            const pKey = docKeyOf(p);
+            for (const n of (incoming || [])) {
+                if (!n || docKeyOf(n) !== pKey) continue;
+                const dup = editIdentityKey(p) === editIdentityKey(n);
+                const findClash = p.type === 'replace' && n.type === 'replace'
+                    && typeof p.find === 'string' && p.find.length && p.find === n.find;
+                const rewrite = n.type === 'replace_all';
+                if (dup || findClash || rewrite) { out.push(p); break; }
+            }
+        }
+        return out;
+    }
+
+    // Staging-site wrapper: resolves each edit's target document (explicit
+    // docName or the document the generation ran for) and marks the losers.
+    function autoSupersedeConflicts(doc, incoming) {
+        if (!incoming || !incoming.length) return 0;
+        const keyOf = (e) => {
+            if (!e || !e.docName) return 'id:' + doc.id;
+            const r = resolveDocByName(e.docName);
+            return r ? 'id:' + r.id : 'name:' + String(e.docName).toLowerCase();
+        };
+        const losers = findAutoSuperseded(pendingEdits, incoming, keyOf);
+        for (const p of losers) p.status = 'superseded';
+        return losers.length;
     }
 
     // Staged proposals are stamped with their source (fromSess = session id,
@@ -1445,14 +1497,17 @@
                 // replace that reply's cards (drop its old batch, stage the new).
                 pendingEdits = pendingEdits.filter(e => e.status !== 'pending' || !(e.fromSess === sessAtStart && e.fromMsg === opts.swipeIdx));
                 if (parsed.edits.length) {
+                    const auto = autoSupersedeConflicts(doc, parsed.edits);
                     editBatchSeq++;
                     for (const e of parsed.edits) { e.batch = editBatchSeq; e.fromSess = sessAtStart; e.fromMsg = opts.swipeIdx; }
                     pendingEdits = pendingEdits.concat(parsed.edits);
                     editsCollapsed = false;
+                    if (auto) addBubble('note', '\u21A9 ' + auto + ' older pending proposal(s) targeted the same text \u2014 auto-superseded so Apply all cannot double-apply; the newest version wins.');
                 }
             } else if (parsed.edits.length) {
                 // A fresh reply: STACK its proposals below anything still pending,
                 // so you can discuss, get a refinement, and compare both.
+                const auto = autoSupersedeConflicts(doc, parsed.edits);
                 const stillPending = pendingEdits.filter(e => e.status === 'pending').length;
                 editBatchSeq++;
                 const srcSess = sess(doc);
@@ -1461,6 +1516,9 @@
                 for (const e of parsed.edits) { e.batch = editBatchSeq; e.fromSess = srcSess.id; e.fromMsg = srcIdx; }
                 pendingEdits = pendingEdits.concat(parsed.edits);
                 editsCollapsed = false;
+                if (auto) {
+                    addBubble('note', '\u21A9 ' + auto + ' older pending proposal(s) targeted the same text \u2014 auto-superseded so Apply all cannot double-apply; the newest version wins.');
+                }
                 if (stillPending) {
                     addBubble('note', '\u2795 ' + parsed.edits.length + ' new proposal(s) staged below your ' + stillPending + ' still-pending one(s) \u2014 compare and Apply the ones you want.');
                 }
@@ -1514,10 +1572,12 @@
                     .map(e => editIdentityKey(e)));
                 const fresh = pe.edits.filter(e => !consumed.has(editIdentityKey(e)));
                 if (fresh.length) {
+                    const auto = autoSupersedeConflicts(doc, fresh);
                     editBatchSeq++;
                     for (const e of fresh) { e.batch = editBatchSeq; e.fromSess = sid; e.fromMsg = idx; }
                     pendingEdits = pendingEdits.concat(fresh);
                     editsCollapsed = false;
+                    if (auto) addBubble('note', '\u21A9 ' + auto + ' older pending proposal(s) targeted the same text \u2014 auto-superseded; the newest version wins.');
                 }
             }
             renderEditCards();
@@ -3807,7 +3867,7 @@
             parseSupersede, formatPendingProposals,
             docLint, collapseInlineSpaces, repairDocJson,
             stripTrailingCommasOutsideStrings, escapeRawControlsInStrings,
-            adjustStampsForSplice, editIdentityKey, buildMessages, blockTokensFor, docBlock, refBlock,
+            adjustStampsForSplice, editIdentityKey, findAutoSuperseded, buildMessages, blockTokensFor, docBlock, refBlock,
             getSettings: () => settings,
             getPendingEdits: () => pendingEdits,
         };

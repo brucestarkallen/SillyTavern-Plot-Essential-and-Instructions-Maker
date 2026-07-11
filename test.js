@@ -563,3 +563,89 @@ nav = simSwipeNav(nav, 1, 7, [{ type: 'append', replace: 'TAIL', status: 'pendin
 ok(nav.length === 1 && !nav.some(e => e.status === 'pending'), 'an already-APPLIED append is not resurrected as pending on swipe re-navigation (double-apply fix)', nav);
 nav = simSwipeNav(nav, 1, 7, [{ type: 'append', replace: 'TAIL', status: 'pending' }, { type: 'append', replace: 'OTHER', status: 'pending' }], seqN);
 ok(nav.filter(e => e.status === 'pending').length === 1 && nav.find(e => e.status === 'pending').replace === 'OTHER', 'only the genuinely new proposal re-stages beside the consumed one', nav.map(e => [e.replace, e.status]));
+
+// ==================================================================
+// v0.12.1 — mechanical auto-supersede at staging time
+// ==================================================================
+// The reported failure: propose -> re-ask WITHOUT apply/skip -> propose again
+// -> Apply all applied the first and the second couldn't find its text (or
+// nested garbage when the replacement contained the find). Conflicts that are
+// PROVABLE without model cooperation are now resolved when the new proposal
+// stages: the older pending card is visibly superseded, newest wins.
+console.log('== findAutoSuperseded: conflict rules ==');
+const dk = (e) => e.docName || 'main';
+const P = (o) => Object.assign({ status: 'pending', batch: 1 }, o);
+let fas = D.findAutoSuperseded(
+    [P({ type: 'replace', find: 'the word', replace: 'A' })],
+    [{ type: 'replace', find: 'the word', replace: 'B', status: 'pending' }], dk);
+ok(fas.length === 1 && fas[0].replace === 'A', 'same find, different replace, same doc -> older superseded (first-occurrence collision)');
+fas = D.findAutoSuperseded(
+    [P({ type: 'append', replace: 'THE TAIL' })],
+    [{ type: 'append', replace: 'THE TAIL', status: 'pending' }], dk);
+ok(fas.length === 1, 'exact duplicate payload (re-ask) -> older superseded, even for appends');
+fas = D.findAutoSuperseded(
+    [P({ type: 'append', replace: 'row one' })],
+    [{ type: 'append', replace: 'row two', status: 'pending' }], dk);
+ok(fas.length === 0, 'different appends never conflict (both can apply)');
+fas = D.findAutoSuperseded(
+    [P({ type: 'insert', find: 'anchor X', replace: 'new para' })],
+    [{ type: 'replace', find: 'anchor X', replace: 'Y', status: 'pending' }], dk);
+ok(fas.length === 0, 'insert vs replace on the same anchor is NOT auto-resolved (insert does not consume its anchor; both may be wanted)');
+fas = D.findAutoSuperseded(
+    [P({ type: 'replace', find: 'a', replace: 'b' }), P({ type: 'append', replace: 'tail' }), P({ type: 'replace', find: 'c', replace: 'd', docName: 'Other.md' })],
+    [{ type: 'replace_all', replace: 'WHOLE NEW DOC', status: 'pending' }], dk);
+ok(fas.length === 2 && !fas.some(e => e.docName === 'Other.md'), 'incoming whole-doc rewrite supersedes all older pending on THAT doc only', fas.length);
+fas = D.findAutoSuperseded(
+    [P({ type: 'replace_all', replace: 'OLD REWRITE' })],
+    [{ type: 'replace', find: 'x', replace: 'y', status: 'pending' }], dk);
+ok(fas.length === 0, 'an OLDER pending rewrite is not silently killed by a newer targeted edit');
+fas = D.findAutoSuperseded(
+    [P({ type: 'replace', find: 'k', replace: 'v', status: 'applied' })],
+    [{ type: 'replace', find: 'k', replace: 'w', status: 'pending' }], dk);
+ok(fas.length === 0, 'non-pending (applied/failed/skipped) older edits are never touched');
+fas = D.findAutoSuperseded(
+    [P({ type: 'replace', find: 'same', replace: 'a', docName: 'A.md' })],
+    [{ type: 'replace', find: 'same', replace: 'b', docName: 'B.md', status: 'pending' }], dk);
+ok(fas.length === 0, 'same find on DIFFERENT documents does not conflict');
+fas = D.findAutoSuperseded(
+    [P({ type: 'replace', find: 'X', replace: 'Y', all: true })],
+    [{ type: 'replace', find: 'X', replace: 'Z', status: 'pending' }], dk);
+ok(fas.length === 1, 'global replace vs targeted replace with the same find still collide');
+
+console.log('== end-to-end: the reported double-apply scenario ==');
+// Doc: "Rule: the hero never lies." | Turn 1 proposes lies->deceives. User
+// re-asks. Turn 2 proposes lies->misleads. Apply all.
+(function () {
+    const docText = 'Rule: the hero never lies. End.';
+    let staged = [P({ type: 'replace', find: 'never lies', replace: 'never deceives', batch: 1 })];
+    const incoming = [{ type: 'replace', find: 'never lies', replace: 'never misleads', status: 'pending' }];
+    // staging-time resolution (mirrors autoSupersedeConflicts on one doc):
+    for (const l of D.findAutoSuperseded(staged, incoming, dk)) l.status = 'superseded';
+    staged = staged.concat(incoming.map(e => Object.assign(e, { batch: 2 })));
+    // Apply all pending (same filter the button uses):
+    let text = docText, applied = 0, failed = 0;
+    for (const e of staged) {
+        if (e.status !== 'pending') continue;
+        const r = D.applyEditToText(text, e);
+        if (r.ok) { text = r.text; applied++; } else { failed++; }
+    }
+    ok(applied === 1 && failed === 0, 'Apply all applies exactly ONE edit, zero failures (was: 1 applied + 1 "not found")', { applied, failed });
+    ok(text.indexOf('never misleads') !== -1 && text.indexOf('deceives') === -1, 'the NEWEST proposal wins', text);
+    ok(staged[0].status === 'superseded', 'the older card is visibly superseded, not silently failed');
+})();
+// The nastier variant: the replacement CONTAINS the find, so the stale
+// duplicate would have located INSIDE the first application and nested garbage
+// instead of failing loudly.
+(function () {
+    let staged = [P({ type: 'replace', find: 'the king', replace: 'the king of ash', batch: 1 })];
+    const incoming = [{ type: 'replace', find: 'the king', replace: 'the king of embers', status: 'pending' }];
+    for (const l of D.findAutoSuperseded(staged, incoming, dk)) l.status = 'superseded';
+    staged = staged.concat(incoming.map(e => Object.assign(e, { batch: 2 })));
+    let text = 'Bow to the king now.';
+    for (const e of staged) {
+        if (e.status !== 'pending') continue;
+        const r = D.applyEditToText(text, e);
+        if (r.ok) text = r.text;
+    }
+    ok(text === 'Bow to the king of embers now.', 'nesting corruption impossible: no "king of ash of embers"', text);
+})();
