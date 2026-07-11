@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.12.2';
+    const VERSION = '0.12.3';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -462,12 +462,59 @@
         if (!incoming || !incoming.length) return 0;
         const keyOf = (e) => {
             if (!e || !e.docName) return 'id:' + doc.id;
-            const r = resolveDocByName(e.docName);
+            const r = resolveDocByName([doc, ...refsOf(doc)], e.docName);
             return r ? 'id:' + r.id : 'name:' + String(e.docName).toLowerCase();
         };
         const losers = findAutoSuperseded(pendingEdits, incoming, keyOf);
         for (const p of losers) p.status = 'superseded';
         return losers.length;
+    }
+
+    // Staging-time supersede (above) catches conflicts visible WITHOUT the
+    // document: duplicates, identical finds, incoming rewrites. Rephrased
+    // finds that target OVERLAPPING text are invisible there — but at APPLY
+    // time the document state is definite, so spans can be located and
+    // interference becomes provable geometry. Rules, for an older pending
+    // edit O vs a newer one N (strictly later batch) on the same document,
+    // where N would actually apply (exact/normalized or whitespace-safe):
+    //   1. O and N both consume text (replace / global replace): conflict if
+    //      any O span intersects any N span — after O applies, N's anchor is
+    //      altered, so it fails or (when O's replacement contains N's find)
+    //      nests garbage.
+    //   2. N is an insert: conflict if an O replace-span covers N's anchor —
+    //      O would consume the anchor N needs.
+    //   3. O is an insert whose insertion point falls STRICTLY inside an N
+    //      span: O applies first (array order) and splits the text N must
+    //      find contiguously. Boundary points (at span start/end) shift but
+    //      do not split — not a conflict.
+    // Same-batch pairs are exempt (written together, deliberately). Appends
+    // and whole-doc rewrites never enter (appends cannot interfere; rewrites
+    // are governed by the staging rules). An O that cannot locate cannot win
+    // OR lose — it fails on its own with the v0.11.9 note.
+    // Pure: items = [{ idx, batch, kind: 'consume'|'insert', spans: [[s,e),…],
+    // insertPoint, applies }]; returns array of idx to supersede.
+    function resolveSpanConflicts(items) {
+        const hit = (a, b) => a[0] < b[1] && b[0] < a[1];
+        const losers = [];
+        for (const o of (items || [])) {
+            if (!o || !o.spans || !o.spans.length) continue;
+            for (const n of (items || [])) {
+                if (!n || n === o || !n.applies) continue;
+                if (!(Number(n.batch) > Number(o.batch))) continue; // strictly newer only
+                if (!n.spans || !n.spans.length) continue;
+                let lost = false;
+                if (o.kind === 'consume') {
+                    // vs a newer consumer OR a newer insert's anchor: any overlap
+                    // means O alters text the newer edit must still find intact.
+                    lost = o.spans.some(os => n.spans.some(ns => hit(os, ns)));
+                } else if (o.kind === 'insert' && n.kind === 'consume') {
+                    const p = o.insertPoint;
+                    lost = Number.isFinite(p) && n.spans.some(ns => p > ns[0] && p < ns[1]);
+                } // insert vs insert: both can apply — anchors are not consumed.
+                if (lost) { losers.push(o.idx); break; }
+            }
+        }
+        return losers;
     }
 
     // Staged proposals are stamped with their source (fromSess = session id,
@@ -1005,13 +1052,69 @@
     function applyEdits(list) {
         const main = activeDoc();
         if (!main) { toast('No document selected.', 'warning'); return; }
-        const todo = (list || []).filter(e => e && e.status === 'pending');
+        let todo = (list || []).filter(e => e && e.status === 'pending');
         if (!todo.length) { renderEditCards(); return; }
 
         // Edits may target the main document (default) or any attached
         // reference document via the "doc" field. Each target keeps its own
         // evolving working text so a batch applies sequentially per document.
         const allowed = [main, ...refsOf(main)];
+        const targetOf = new Map(); // edit -> doc | null(unresolvable)
+        for (const edit of todo) {
+            if (!edit.docName) { targetOf.set(edit, main); continue; }
+            targetOf.set(edit, resolveDocByName(allowed, edit.docName) || null);
+        }
+
+        // Apply-time conflict pre-pass (v0.12.3): before anything applies,
+        // locate every find-anchored pending edit against its document's
+        // CURRENT text and supersede older edits whose spans provably
+        // interfere with a newer applicable one (see resolveSpanConflicts).
+        // This closes the cross-batch REPHRASED-find case the staging-time
+        // rules cannot see: "Apply all" no longer applies proposal 1 and then
+        // fails (or garbles) proposal 2 targeting the same passage.
+        let autoResolved = 0;
+        if (todo.length > 1) {
+            const groups = new Map(); // docId -> edits[]
+            for (const edit of todo) {
+                const t = targetOf.get(edit);
+                if (!t) continue;
+                if (!groups.has(t.id)) groups.set(t.id, { doc: t, edits: [] });
+                groups.get(t.id).edits.push(edit);
+            }
+            for (const g of groups.values()) {
+                const batches = new Set(g.edits.map(e => e.batch || 0));
+                if (g.edits.length < 2 || batches.size < 2) continue;
+                const text = String(g.doc.text || '');
+                const items = [];
+                g.edits.forEach((edit, i) => {
+                    if (edit.type === 'append' || edit.type === 'replace_all') return;
+                    const needle = String(edit.find || '');
+                    if (!needle) return;
+                    if (edit.type === 'replace' && edit.all) {
+                        const spans = [];
+                        let p = text.indexOf(needle);
+                        while (p !== -1 && spans.length < 200) { spans.push([p, p + needle.length]); p = text.indexOf(needle, p + needle.length); }
+                        if (spans.length) items.push({ idx: i, batch: edit.batch || 0, kind: 'consume', spans, applies: true });
+                        return;
+                    }
+                    const loc = locate(text, needle);
+                    if (!loc) return; // cannot win or lose — fails on its own
+                    const applies = !loc.fuzzy || !!loc.safe;
+                    const span = [loc.start, loc.end];
+                    if (edit.type === 'insert') {
+                        items.push({ idx: i, batch: edit.batch || 0, kind: 'insert', spans: [span], insertPoint: loc.end, applies });
+                    } else {
+                        items.push({ idx: i, batch: edit.batch || 0, kind: 'consume', spans: [span], applies });
+                    }
+                });
+                for (const li of resolveSpanConflicts(items)) {
+                    g.edits[li].status = 'superseded';
+                    autoResolved++;
+                }
+            }
+            if (autoResolved) todo = todo.filter(e => e.status === 'pending');
+        }
+
         const work = new Map(); // docId -> {doc, before, text, count}
         const getWork = (d) => {
             let w = work.get(d.id);
@@ -1021,7 +1124,7 @@
         for (const edit of todo) {
             let target = main;
             if (edit.docName) {
-                target = resolveDocByName(allowed, edit.docName);
+                target = targetOf.get(edit);
                 if (!target) {
                     edit.status = 'failed: document "' + edit.docName + '" is not this conversation\u2019s document or an attached reference (\uD83D\uDD17)';
                     continue;
@@ -1050,7 +1153,8 @@
             if (!Array.isArray(settings.batchLog)) settings.batchLog = [];
             settings.batchLog.push(batchId);
             while (settings.batchLog.length > 8) settings.batchLog.shift();
-            appliedNote = 'Applied: ' + changed.map(w => w.count + ' edit(s) \u2192 "' + w.doc.name + '"').join(', ') + '.';
+            appliedNote = 'Applied: ' + changed.map(w => w.count + ' edit(s) \u2192 "' + w.doc.name + '"').join(', ') + '.'
+                + (autoResolved ? ' (' + autoResolved + ' older overlapping proposal(s) auto-superseded \u2014 the newest version won.)' : '');
             pushHistory(main, 'note', appliedNote);
         }
         if (failed.length) {
@@ -3867,7 +3971,7 @@
             parseSupersede, formatPendingProposals,
             docLint, collapseInlineSpaces, repairDocJson,
             stripTrailingCommasOutsideStrings, escapeRawControlsInStrings,
-            adjustStampsForSplice, editIdentityKey, findAutoSuperseded, buildMessages, blockTokensFor, docBlock, refBlock,
+            adjustStampsForSplice, editIdentityKey, findAutoSuperseded, resolveSpanConflicts, buildMessages, blockTokensFor, docBlock, refBlock,
             getSettings: () => settings,
             getPendingEdits: () => pendingEdits,
         };

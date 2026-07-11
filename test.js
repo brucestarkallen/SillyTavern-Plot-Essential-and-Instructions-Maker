@@ -649,3 +649,75 @@ console.log('== end-to-end: the reported double-apply scenario ==');
     }
     ok(text === 'Bow to the king of embers now.', 'nesting corruption impossible: no "king of ash of embers"', text);
 })();
+
+// ==================================================================
+// v0.12.3 — apply-time span-conflict pre-pass
+// ==================================================================
+console.log('== resolveSpanConflicts: geometry ==');
+const RC = (items) => D.resolveSpanConflicts(items).slice().sort();
+ok(RC([
+    { idx: 0, batch: 1, kind: 'consume', spans: [[10, 20]], applies: true },
+    { idx: 1, batch: 2, kind: 'consume', spans: [[15, 30]], applies: true },
+]).join() === '0', 'overlapping consumers across batches: older loses');
+ok(RC([
+    { idx: 0, batch: 1, kind: 'consume', spans: [[10, 20]], applies: true },
+    { idx: 1, batch: 2, kind: 'consume', spans: [[20, 30]], applies: true },
+]).length === 0, 'touching-but-disjoint half-open spans [10,20) [20,30): no conflict');
+ok(RC([
+    { idx: 0, batch: 2, kind: 'consume', spans: [[10, 20]], applies: true },
+    { idx: 1, batch: 2, kind: 'consume', spans: [[15, 30]], applies: true },
+]).length === 0, 'same batch is exempt (deliberate sequence)');
+ok(RC([
+    { idx: 0, batch: 1, kind: 'consume', spans: [[10, 20]], applies: true },
+    { idx: 1, batch: 2, kind: 'consume', spans: [[15, 30]], applies: false },
+]).length === 0, 'a newer edit that would NOT apply cannot kill an older one');
+ok(RC([
+    { idx: 0, batch: 1, kind: 'consume', spans: [[10, 30]], applies: true },
+    { idx: 1, batch: 2, kind: 'insert', spans: [[12, 25]], insertPoint: 25, applies: true },
+]).join() === '0', 'older replace covering a newer insert\u2019s anchor: older loses');
+ok(RC([
+    { idx: 0, batch: 1, kind: 'insert', spans: [[10, 14]], insertPoint: 14, applies: true },
+    { idx: 1, batch: 2, kind: 'consume', spans: [[12, 30]], applies: true },
+]).join() === '0', 'older insert point strictly inside a newer find span: older loses (would split it)');
+ok(RC([
+    { idx: 0, batch: 1, kind: 'insert', spans: [[8, 12]], insertPoint: 12, applies: true },
+    { idx: 1, batch: 2, kind: 'consume', spans: [[12, 30]], applies: true },
+]).length === 0, 'insert point AT a span boundary shifts but does not split: no conflict');
+ok(RC([
+    { idx: 0, batch: 1, kind: 'insert', spans: [[10, 14]], insertPoint: 14, applies: true },
+    { idx: 1, batch: 2, kind: 'insert', spans: [[10, 14]], insertPoint: 14, applies: true },
+]).length === 0, 'insert vs insert never conflicts (anchors are not consumed)');
+ok(RC([
+    { idx: 0, batch: 1, kind: 'consume', spans: [[5, 8], [40, 43]], applies: true },
+    { idx: 1, batch: 3, kind: 'consume', spans: [[41, 60]], applies: true },
+]).join() === '0', 'global replace (multi-span): ANY occurrence overlapping the newer span loses');
+ok(RC([
+    { idx: 0, batch: 1, kind: 'consume', spans: [[10, 20]], applies: true },
+    { idx: 1, batch: 2, kind: 'consume', spans: [[50, 60]], applies: true },
+    { idx: 2, batch: 3, kind: 'consume', spans: [[55, 70]], applies: true },
+]).join() === '1', 'only the actually-overlapping older edit loses; unrelated ones survive');
+
+console.log('== end-to-end: REPHRASED overlapping finds (staging rules cannot see this) ==');
+(function () {
+    // Turn 1 proposes against "the hero never lies to allies." Turn 2, asked
+    // again, quotes a DIFFERENT overlapping excerpt of the same sentence.
+    const docText = 'Rule: the hero never lies to allies. End.';
+    const e1 = { type: 'replace', find: 'hero never lies', replace: 'hero never deceives', reason: '', status: 'pending', batch: 1 };
+    const e2 = { type: 'replace', find: 'never lies to allies', replace: 'always deals honestly with allies', reason: '', status: 'pending', batch: 2 };
+    // mirror the applyEdits pre-pass builder on one doc:
+    const items = [];
+    [e1, e2].forEach((edit, i) => {
+        const loc = D.locate(docText, edit.find);
+        if (loc) items.push({ idx: i, batch: edit.batch, kind: 'consume', spans: [[loc.start, loc.end]], applies: !loc.fuzzy || !!loc.safe });
+    });
+    const edits = [e1, e2];
+    for (const li of D.resolveSpanConflicts(items)) edits[li].status = 'superseded';
+    let text = docText, applied = 0, failed = 0;
+    for (const e of edits) {
+        if (e.status !== 'pending') continue;
+        const r = D.applyEditToText(text, e);
+        if (r.ok) { text = r.text; applied++; } else { failed++; }
+    }
+    ok(e1.status === 'superseded' && applied === 1 && failed === 0, 'older overlapping proposal auto-superseded; exactly one apply, zero failures', { s1: e1.status, applied, failed });
+    ok(text === 'Rule: the hero always deals honestly with allies. End.', 'the NEWEST wording wins cleanly', text);
+})();
