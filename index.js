@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.13.0';
+    const VERSION = '0.14.0';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -34,6 +34,7 @@
     const PRESET_PE_ID = 'seed_pe_maker';
     const PRESET_AI_ID = 'seed_ai_instructions';
     const PRESET_WB_ID = 'seed_worldbook_maker';
+    const PRESET_SC_ID = 'seed_sc_auditor';
 
     // Full working default (not a placeholder): builds a usable SillyTavern
     // worldbook on day one. Attach the Plot Essential as a reference (the link
@@ -87,10 +88,75 @@
         '8. Briefly note in prose WHY you chose non-obvious settings (e.g. "put the active siege at_depth so it stays salient; gave all five generals order 200 so they rank together").',
     ].join('\n')
 
+
+    // Full working default (not a placeholder): the Summaryception Memory
+    // Auditor brief, adapted from Summaryception's MEMORY_AUDITOR.md to this
+    // extension's docedits environment. Create the transplant doc with +SC
+    // (or Imp), paste the Memory Transplant export, say *audit. Plug and play.
+    const SC_AUDITOR_PROMPT = [
+        'You are the SUMMARYCEPTION MEMORY AUDITOR: auditor and showrunner for a roleplay story\'s external memory. The [DOCUMENT] is a Summaryception MEMORY TRANSPLANT - the complete distilled memory of a long story, exported from the Summaryception extension and re-imported there after your repairs: a notepad of the author\'s starting canon, a character ledger (one dossier per character), the ordered summary snippets of everything that happened, and pinned verbatim quotes. A separate, stateless Storyteller AI will consume the imported file as its ONLY memory. You are NOT the Storyteller. Never write narrative continuations. Every decision is framed as: "how do I make this memory serve a fresh Storyteller perfectly?"',
+        '',
+        'The user is paying to PLAY, not to manage you. Listen once, act, deliver. One clarification is permitted for genuine ambiguity - two readings that produce different canon. Never ask the same question twice. Never hedge a delivered result; if unsure, run another pass BEFORE delivering. A scoped, named gap is honest; a general disclaimer shifts verification to the user.',
+        '',
+        'FIRST CONTACT: if the user opens without a command (a greeting, "look at this", nothing), reply with a FIVE-LINE receipt - counts (snippets / ledger characters / pins / notepad yes-no), a rough token estimate, a one-line health impression, and the command list on one line - then STOP. No edits, no unrequested analysis, no restating file contents. If the [DOCUMENT] is empty, say in one line that the transplant export has not been pasted yet (View button) and stop.',
+        '',
+        '=== THE FORMAT (your edits must round-trip through the importer) ===',
+        'The transplant is Markdown; every item sits between HTML-comment markers carrying a JSON payload. The Summaryception importer re-parses ONLY the markers - section headings (## ...) are for humans, prose between blocks is ignored, and a mistyped marker means silently lost data. Blocks:',
+        '- <!-- SC-TRANSPLANT {...} --> : file meta. Never touch it.',
+        '- <!-- SC-NOTEPAD --> text <!-- /SC-NOTEPAD --> : the author\'s own STARTING canon, written at the story\'s start and deliberately never updated as the story progresses. Foundational facts (world rules, identities, backstory) are highest authority; situational details (who is where, current statuses) describe the OPENING state and are expected to be outgrown by the snippets - that is progression, never staleness, never a finding, never something to "refresh". Edit only on instruction, or to fix an internal contradiction you can cite from within the notepad itself.',
+        '- <!-- SC-LEDGER {"name":"X","t":123} --> then CORE: / STATE: / ARC: / THREADS: lines <!-- /SC-LEDGER --> : one character dossier. CORE = who they are (stable identity), STATE = where/what now, ARC = how they changed, THREADS = open hooks. Keep the four field labels; multi-line field content is fine. The name lives in the marker\'s JSON - a ledger block whose payload is broken or nameless is DROPPED whole by the importer.',
+        '- <!-- SC-SNIPPET {"turns":"12-18"} --> summary text, optional <!-- SC-DETAIL --> expanded detail, then <!-- /SC-SNIPPET --> : one summary snippet, in story order.',
+        '- <!-- SC-PIN {"label":"..."} --> quote <!-- /SC-PIN --> : a verbatim quote the author chose to preserve. NEVER reword pin text; delete only on instruction or if its subject was removed.',
+        '- A "## OPEN CONTINUITY FLAGS" section, if present, is informational only - the importer does not re-import it; treat its lines as leads for *audit.',
+        '',
+        'MARKER RULES (how the docedits mechanics apply here):',
+        '1. Never alter, reformat, split, or retype a marker line. Edit only the content BETWEEN markers. When a "find" must include a marker line, copy it character-for-character, JSON payload included.',
+        '2. DELETE a block = one find/replace whose "find" spans from its opening marker through its closing marker inclusive, "replace": "". Never leave an opener without its closer or a closer without its opener.',
+        '3. ADD a snippet = insert_after whose anchor ENDS at the preceding snippet\'s closing marker: copy that snippet\'s final body line PLUS the <!-- /SC-SNIPPET --> line under it as one multi-line anchor (the body line makes it unique - closer lines alone repeat across the file and will not match uniquely). The "replace" is one COMPLETE new block: opener (use {"turns":"?"} when the source turns are unknown), text, closer. To add before the first snippet, anchor on the "## MEMORY SNIPPETS" heading line instead. Use the same technique to add a ledger character or a pin inside its own section.',
+        '4. MERGE snippets = one find/replace spanning from the first block\'s opener through the last block\'s closer, replaced by ONE complete block whose text carries the combined substance and whose turns cover the combined span.',
+        '5. NEVER write commentary, tags, notes, or reasoning inside any block. The data must read as if it was always this clean. Findings, evidence, and change reports go in your chat prose, never in the document. (Deliverable purity.)',
+        '6. The extension verifies marker integrity deterministically (the Check button) - never re-print the document to prove your edits are safe, and never use an edit as a way to "show" the user something.',
+        '',
+        '=== MANDATES (priority order) ===',
+        'M-RECORD (record-only, anti-fabrication). You repair and reorganize what the memory contains. You do NOT invent events, motives, psychology, consequences, or connections - not even to justify a cut or a merge. Two connected facts are not automatically dependent. When in doubt: it is not in the memory, so it does not exist. Fix by correction, removal, or reorganization; add content only on explicit user instruction.',
+        'M-EPISTEMIC (knowledge needs a pathway). No character entry may contain knowledge that character has no recorded way of possessing. Flag and fix entries where a dossier "knows" another character\'s secret, an off-screen event, or the protagonist\'s hidden identity without a discoverable pathway in the snippets. Do not invent a pathway to launder the leak - remove the knowledge instead.',
+        'M-SCAN (disease scan, anti-whack-a-mole). Any error found - by you or by the user - names a CLASS. Scan the ENTIRE file for every instance of that class and fix all of them in one pass, then show scan evidence (what was scanned, how many found/fixed). Fixing only the named instance is a critical failure. Classes that recur in memory files: wrong numbers (ages, counts, distances); wrong titles/ranks; wrong attribution (deeds, scars, signature items assigned to the wrong character); reversed causality; stale state (a STATE that elapsed events have invalidated - after every major event ask what it made true and false everywhere else); ledger-vs-snippet contradiction; snippet-vs-snippet timeline conflict; editorial contamination (moral judgments or psychoanalysis in CORE the story never established); protagonist reactions preloaded inside NPC dossiers; "doesn\'t know X" filler that restates the epistemic rule instead of marking a real plot gap; defensive padding ("to ensure", "so that") left by past fixes; compression damage (subject/object swapped, dialogue stripped of the context that gave it meaning).',
+        'M-EYE (the expert eye). Every reply contains: (1) what was asked, done; (2) what you found while in there; (3) evidence the scan happened. If a find-and-replace could have produced your reply, the thinking is not finished.',
+        'M-TAGS (chat discipline). In analysis, tag claims [CANON] (quotable from the file), [INFERENCE] (derived, reasoning shown), or [SPECULATION] (labeled guess). Never mix them unmarked. Inside the document itself, no tags ever.',
+        '',
+        '=== COMMANDS ===',
+        '*audit - full review, REPORT ONLY: no docedits block at all. Read everything, then report: contradictions, epistemic leaks, stale states, attribution errors, timeline conflicts, weirdness, poor-decision patterns worth the author\'s eye - each with [file evidence], severity, and the proposed fix. End with a verdict: what is healthy, what needs *fix, whether *cleanup is warranted.',
+        '*fix - apply the audit. Execute every fix from the most recent *audit (or run one silently first) as surgical docedits, and report the changes with scan evidence.',
+        '*cleanup - the showrunner pass, for stories grown cluttered or convoluted. Three phases; NEVER any edits before approval:',
+        '  Phase 1, DIRECTOR\'S READ (diagnosis, no edits): the throughline (what the story is about right now, 1-2 lines); the cold-read test (where exactly would a fresh Storyteller get lost?); broken coherence (contradictions and unmotivated jumps, each with a proposed fix); what is missing, split into "I can propose" vs "only the author can answer" - ASK the latter, never invent; the motivation check (does every key action have a planted motive?).',
+        '  Phase 2, the manifest, two separately approvable layers. DECLUTTER (safe, subtractive): classify every element SPINE (2-5 core arcs - "if this vanished, would the author start a new story?" - untouchable) / SUPPORT (reinforces a spine arc - keep, compress, make the connection explicit) / TEXTURE (world-feel driving no arc - absorb into one broad-stroke entry) / NOISE (dead-end hooks, orphaned setups, minor characters with no future - remove, patch downstream references). RESHAPE (restructuring): untangle knotted threads into clean sequence; merge arcs doing the identical narrative job; resolve or park dangling threads in one line; re-sequence where chronology allows; cut decorative callbacks, keep load-bearing ones.',
+        '  Phase 3, execute the approved scope ONLY, as docedits. Safeguards: the showrunner test ("would a good showrunner cut this in the writers\' room?") - remove confusion and junk, not richness; a rich story keeps its B-plots and quiet beats. Unsure whether texture or junk: keep and flag. If knowledge from a texture moment feeds a spine arc, it is SUPPORT. "Keep it" from the author = kept, zero pushback - attachment IS value.',
+        '*optimize - bulletproof token reduction with ZERO information loss. The goal is not "smaller file"; it is "smaller file with nothing gone". If both cannot be achieved, zero loss wins - a longer file with every detail beats a tighter one missing a dialogue beat the author wanted. Cut only filler, redundancy, and loose expression. PRESERVE unconditionally: every action, every name, every number (ages, counts, distances, dates, money), every causal chain, every relationship shift, every revelation/leverage/setup, every dialogue line that shifted power or is referenced later, every mature content beat (never euphemize), every named system WITH its mechanism.',
+        '  The Human Memory Test governs every borderline cut: telling this story to a friend from memory, would you include it? Moments that made a character FEEL something, lines that shifted power, HOW someone won: never cut. Logistics, staging, transitions: cut freely.',
+        '  The 4-Question Test on EVERY sentence before it dies: 1. Removed - could the Storyteller now generate something contradictory? KEEP. 2. Removed - vague where specificity matters? KEEP. 3. Removed - does a later entry stop making sense? KEEP. 4. Removed - nothing about Storyteller behavior changes? CUT.',
+        '  Techniques, applied IN THIS ORDER (each runs on the previous one\'s output; when a guardrail fires, the content stays):',
+        '  1. SEQUENTIAL AGGREGATION - consecutive snippets sharing actor, place, and time-window with no load-bearing beat between them merge into one entry keeping all facts and the combined span. Guardrail: a snippet containing a power-shifting line, a relationship shift, a revelation, a causal link, or a growth milestone stays as its own entry - only the truly routine merge.',
+        '  2. REFERENCE STRIPPING - the ledger holds identity; snippets hold action. Strip identity re-descriptions (age, rank, traits, appearance) from snippets when the ledger already carries them. Guardrail: a character\'s first appearance keeps its introduction.',
+        '  3. DIALOGUE SURROUND COMPRESSION - keep the load-bearing line VERBATIM; compress the staging exchange around it into one action beat. Load-bearing means: shifted power, established leverage, caused a visible reaction, is referenced later, or revealed information.',
+        '  4. EMOTIONAL TEXTURE COMPRESSION - long emotional prose becomes label + cause ("felt dread as he walked away - third time"). Guardrail: a FIRST-time emotion, or one contradicting the character\'s CORE plot-relevantly, keeps its full texture.',
+        '  5. SPATIAL/STAGING COMPRESSION - travel becomes origin to destination + anything significant en route. Guardrail: an encounter, observation, or realization during the travel stays as its own beat.',
+        '  6. CAUSAL CHAIN NOTATION - multi-step strategies compress to arrow notation keeping every concrete lever: "scouts -> blocked pass -> burning depot (urgency) -> archer bait -> cavalry flank". Guardrail: the mechanism of each step must remain inferable; "plan -> executed -> won" is loss, not compression.',
+        '  7. REDUNDANT RESTATEMENT STRIPPING - if a ledger field restates what a snippet already records (or vice versa), the source of truth keeps it and the restatement keeps only what the other could not convey.',
+        '  8. NOTATION COMPRESSION - last, pure notation tightening with zero information content (filler transitions, double-framing, restated headers). Guardrail: never introduce parsing ambiguity; marker lines are untouchable.',
+        '  ZERO-LOSS VERIFICATION (mandatory, after all techniques - "same entry count" is the WRONG test, aggregation reduces count by design). Verify instead: every load-bearing dialogue line present verbatim; every relationship shift still captured; every causal chain\'s mechanism inferable; every named character still appears; every scale-defining number present; every revelation/leverage/setup described; every mature beat present un-euphemized; the causal web still lets a reader reconstruct what happened, why, and what it changed. ANY check fails: the compression was not smart enough - restore the missing content and re-compress without losing it. Report estimated tokens before/after and the verification result as scan evidence.',
+        '*brief - write a short handoff paragraph IN CHAT (no docedits, never in the document) telling a fresh Storyteller where the story stands and what is in motion, for use as the first message of a new session.',
+        'Free-form ("change X", "retcon Y", "Alaric should never have learned Z") - the minimal correct edit, then the M-SCAN class pass across the whole file, then the edits.',
+        '',
+        '=== HOW YOU DELIVER ===',
+        'You never output the file and never produce downloads - the extension applies your docedits as reviewable diff cards with undo, and the user exports/imports the document themselves. Prefer several surgical edits (the author reviews each one) over rewrites. "replace_all" is permitted ONLY for *optimize and an approved full-scope *cleanup - those commands ARE the user explicitly requesting a full rewrite - and its "replace" must then be the COMPLETE document with every kept block present: never a diff, never "unchanged sections omitted", never "rest as before" - an omitted block is a silently deleted block.',
+        'In chat alongside the edits: the change report - what changed and why, scan evidence, estimated token delta when size changed. Reference content by character name or snippet turns plus a SHORT quote; never paste whole snippets or dossiers into the report; never echo the document back; never re-explain these instructions; never ask whether to proceed on a command already given. Every token you print is the user\'s budget: spend it on findings and fixes, not narration.',
+    ].join('\n')
+
     const DEFAULT_PRESET_PROMPTS = {
         [PRESET_PE_ID]: 'You are a world-lore architect who edits the document with surgical docedits. (Placeholder — open this preset\'s Edit button and paste the full Plot Essential Maker instructions.)',
         [PRESET_AI_ID]: 'You are an expert author of AI instruction sets who edits the document with surgical docedits. (Placeholder — open this preset\'s Edit button and paste the full instructions.)',
         [PRESET_WB_ID]: WORLDBOOK_MAKER_PROMPT,
+        [PRESET_SC_ID]: SC_AUDITOR_PROMPT,
     };
 
     function defaultPresets() {
@@ -98,6 +164,7 @@
             { id: PRESET_PE_ID, name: 'Plot Essential Maker', prompt: DEFAULT_PRESET_PROMPTS[PRESET_PE_ID] },
             { id: PRESET_AI_ID, name: 'AI Instructions Maker', prompt: DEFAULT_PRESET_PROMPTS[PRESET_AI_ID] },
             { id: PRESET_WB_ID, name: 'Worldbook Maker', prompt: DEFAULT_PRESET_PROMPTS[PRESET_WB_ID] },
+            { id: PRESET_SC_ID, name: 'Summaryception Auditor', prompt: DEFAULT_PRESET_PROMPTS[PRESET_SC_ID] },
         ];
     }
 
@@ -737,6 +804,124 @@
         const fixed = escapeRawControlsInStrings(stripTrailingCommasOutsideStrings(text));
         try { JSON.parse(fixed); return { changed: fixed !== text, text: fixed }; }
         catch (e) { return { changed: false, text, error: String((e && e.message) || e) }; }
+    }
+
+
+    // Deterministic Summaryception transplant linter. Mirrors the Summaryception
+    // importer's tolerant marker parser move-for-move and reports exactly what
+    // that importer would silently DROP or misfile — the one damage class an
+    // auditing LLM cannot reliably see in its own edits (marker integrity).
+    // Case-sensitivity, payload-JSON validity, segment bounds (opener → next
+    // opener), and first-closer-wins all match the importer. Pure; no LLM.
+    function lintTransplant(text) {
+        const t = String(text ?? '').replace(/\r\n?/g, '\n');
+        const KINDS = ['TRANSPLANT', 'NOTEPAD', 'LEDGER', 'SNIPPET', 'PIN'];
+        const out = { ok: true, counts: { snippets: 0, ledger: 0, pins: 0, notepad: false, meta: false }, issues: [] };
+        const lineAt = (idx) => t.slice(0, idx).split('\n').length;
+        const issue = (sev, msg, idx) => out.issues.push({ sev, msg, line: lineAt(idx) });
+        // Every comment that *looks like* an SC marker, well-formed or not.
+        // Detection is case-INsensitive on purpose: the importer is case-
+        // sensitive, so a case-mangled marker is invisible to it — the linter
+        // must see it to report it. Classification below stays exact-case.
+        const any = /<!--\s*(\/?)([Ss][Cc])-([A-Za-z0-9_-]+)\s*(\{[\s\S]*?\})?\s*-->/g;
+        const marks = [];
+        const wellFormed = [];
+        let m;
+        while ((m = any.exec(t)) !== null) {
+            // exact = the importer would recognize this marker's name at all
+            // (literal "SC-" prefix AND exact-case kind).
+            const exact = m[2] === 'SC' && (KINDS.includes(m[3]) || m[3] === 'DETAIL');
+            marks.push({ closer: m[1] === '/', prefix: m[2], kind: m[3], exact, json: m[4] || '', idx: m.index, end: m.index + m[0].length });
+            wellFormed.push([m.index, m.index + m[0].length]);
+        }
+        // Comments that mention SC- but did not parse as a marker at all (e.g. a
+        // payload without braces): invisible to the importer — the "block" never
+        // opens and its text silently merges into the previous block.
+        const loose = /<!--[^>]*\b[Ss][Cc]-[^>]*-->/g;
+        while ((m = loose.exec(t)) !== null) {
+            const a = m.index, b = m.index + m[0].length;
+            if (!wellFormed.some(w => a >= w[0] && b <= w[1])) {
+                issue('error', 'Malformed SC marker — the importer will not recognize it, so no block opens/closes here: ' + m[0].slice(0, 60), a);
+            }
+        }
+        for (const mk of marks) {
+            if (mk.exact) {
+                if (mk.kind === 'DETAIL' && !mk.closer && mk.json) issue('error', 'SC-DETAIL must carry no payload — the importer will not recognize this marker, the detail merges into the snippet text', mk.idx);
+                continue;
+            }
+            const up = mk.kind.toUpperCase();
+            issue('error', (KINDS.includes(up) || up === 'DETAIL')
+                ? 'Marker ' + mk.prefix + '-' + mk.kind + ' is case-mismatched (importer is case-sensitive, expects SC-' + up + ') — it is ignored and its data is lost or swallowed'
+                : 'Unknown marker ' + mk.prefix + '-' + mk.kind + ' — the importer ignores it; the block it was meant to open/close is lost or swallowed', mk.idx);
+        }
+        const openers = marks.filter(k => !k.closer && k.exact && KINDS.includes(k.kind));
+        const closers = marks.filter(k => k.closer && k.exact && KINDS.includes(k.kind));
+        const usedClosers = new Set();
+        const reportedClosers = new Set();
+        const seenLedger = new Set();
+        let seenNotepad = false;
+        for (let i = 0; i < openers.length; i++) {
+            const op = openers[i];
+            if (op.kind === 'TRANSPLANT') {
+                out.counts.meta = true;
+                if (op.json) { try { JSON.parse(op.json); } catch (e) { issue('warn', 'SC-TRANSPLANT meta JSON invalid — importer drops the meta', op.idx); } }
+                continue;
+            }
+            let pay = null, payBroken = false;
+            if (op.json) { try { pay = JSON.parse(op.json); } catch (e) { payBroken = true; } }
+            const hardEnd = (i + 1 < openers.length) ? openers[i + 1].idx : t.length;
+            const cl = closers.find(c => c.kind === op.kind && c.idx >= op.end && c.idx < hardEnd);
+            if (cl) usedClosers.add(cl);
+            const bodyEnd = cl ? cl.idx : hardEnd;
+            const body = t.slice(op.end, bodyEnd);
+            for (const c of closers) {
+                if (c !== cl && c.idx > op.end && c.idx < bodyEnd) {
+                    issue('warn', 'Stray closer /SC-' + c.kind + ' inside an open SC-' + op.kind + ' block — it imports as junk text inside that block', c.idx);
+                    reportedClosers.add(c);
+                }
+            }
+            if (!cl) issue('warn', 'SC-' + op.kind + ' has no closing marker — its body runs on to the next block (trailing headings/prose are swallowed into it)', op.idx);
+            if (op.kind === 'NOTEPAD') {
+                if (seenNotepad) issue('warn', 'Multiple SC-NOTEPAD blocks — the later one silently OVERWRITES the earlier on import', op.idx);
+                seenNotepad = true;
+                if (body.trim()) out.counts.notepad = true;
+            } else if (op.kind === 'LEDGER') {
+                if (payBroken) { issue('error', 'SC-LEDGER payload JSON is broken — the importer DROPS this entire dossier', op.idx); continue; }
+                const name = pay && typeof pay.name === 'string' ? pay.name.trim() : '';
+                if (!name) { issue('error', 'SC-LEDGER has no "name" in its payload — the importer DROPS this entire dossier', op.idx); continue; }
+                const hasField = body.split('\n').some(l => /^(CORE|STATE|ARC|THREADS):/.test(l));
+                if (!hasField) { issue('error', 'Ledger "' + name + '" has none of CORE:/STATE:/ARC:/THREADS: — the importer DROPS it', op.idx); continue; }
+                if (seenLedger.has(name)) issue('error', 'Duplicate ledger name "' + name + '" — the later dossier silently OVERWRITES the earlier on import', op.idx);
+                seenLedger.add(name);
+                out.counts.ledger++;
+            } else if (op.kind === 'SNIPPET') {
+                if (payBroken) issue('warn', 'SC-SNIPPET payload JSON is broken — the snippet imports but loses its turn range', op.idx);
+                const dm = /<!--\s*SC-DETAIL\s*-->/.exec(body);
+                const text2 = (dm ? body.slice(0, dm.index) : body).trim();
+                if (!text2) { issue('error', 'Empty SC-SNIPPET' + (dm ? ' (detail-only — the importer drops the detail with it)' : '') + ' — the importer DROPS it', op.idx); continue; }
+                out.counts.snippets++;
+            } else if (op.kind === 'PIN') {
+                if (payBroken) issue('warn', 'SC-PIN payload JSON is broken — the pin imports but loses its label', op.idx);
+                if (!body.trim()) { issue('error', 'Empty SC-PIN — the importer DROPS it', op.idx); continue; }
+                out.counts.pins++;
+            }
+        }
+        for (const c of closers) {
+            if (!usedClosers.has(c) && !reportedClosers.has(c)) issue('warn', 'Closer /SC-' + c.kind + ' with no matching open block — dead marker', c.idx);
+        }
+        for (const mk of marks) {
+            if (mk.kind !== 'DETAIL' || !mk.exact || mk.closer || mk.json) continue;
+            let inside = false;
+            for (let i = 0; i < openers.length; i++) {
+                const op = openers[i];
+                if (op.kind !== 'SNIPPET') continue;
+                const hardEnd = (i + 1 < openers.length) ? openers[i + 1].idx : t.length;
+                if (mk.idx >= op.end && mk.idx < hardEnd) { inside = true; break; }
+            }
+            if (!inside) issue('warn', 'SC-DETAIL marker outside any snippet — dead marker, its text is not the detail of anything', mk.idx);
+        }
+        out.ok = !out.issues.some(x => x.sev === 'error');
+        return out;
     }
 
     function parseDocEdits(text) {
@@ -2152,6 +2337,32 @@
         toast('Created worldbook "' + d.name + '". Attach your Plot Essential via \uD83D\uDD17 so entries stay consistent, then ask the agent to add entries.', 'success');
     }
 
+    // +SC: paste-first creation of a Summaryception Memory Transplant doc on
+    // the Summaryception Auditor preset. Export the transplant .md from
+    // Summaryception, tap +SC, paste, save — then say *audit. The toast runs
+    // the deterministic marker lint immediately so a mangled paste is caught
+    // before any auditing happens.
+    function newTransplantDoc() {
+        showEditor({
+            title: '\uD83E\uDDE0 New Summaryception transplant \u2014 paste the Memory Transplant export',
+            text: '',
+            showName: true,
+            nameValue: 'Memory Transplant.md',
+            saveLabel: 'Create transplant doc',
+            closeOnSave: true,
+            onSave: (text, name) => {
+                const d = makeDoc((name || '').trim() || 'Memory Transplant.md', text);
+                d.presetId = PRESET_SC_ID;
+                settings.docs.push(d);
+                setActiveDoc(d.id);
+                persist();
+                renderAll();
+                const tl = lintTransplant(d.text);
+                toast('Created "' + d.name + '" on the Summaryception Auditor preset \u2014 ' + tl.counts.snippets + ' snippet(s), ' + tl.counts.ledger + ' character(s), ' + tl.counts.pins + ' pin(s)' + (tl.issues.length ? '; \u26A0 ' + tl.issues.length + ' marker issue(s), run \uD83D\uDD0D Check' : '') + '. Say *audit to begin.', tl.issues.length ? 'warning' : 'success');
+            },
+        });
+    }
+
     function renameDoc() {
         const doc = activeDoc();
         if (!doc) { toast('No document selected.', 'warning'); return; }
@@ -2396,7 +2607,10 @@
     // ------------------------------------------------------------------
 
     function isSeedPreset(id) {
-        return id === PRESET_PE_ID || id === PRESET_AI_ID;
+        // Single source of truth: anything with a shipped default prompt is a
+        // seeded preset — undeletable (deletion was fake anyway: loadSettings
+        // re-seeds missing seeds on reload) and reset-eligible.
+        return Object.prototype.hasOwnProperty.call(DEFAULT_PRESET_PROMPTS, id);
     }
 
     function newPreset() {
@@ -2441,8 +2655,8 @@
     function resetPreset() {
         const p = presetForDoc(activeDoc());
         if (!p) { toast('No preset available.', 'warning'); return; }
-        if (!isSeedPreset(p.id)) { toast('Only the two built-in presets have a default to reset to.', 'warning'); return; }
-        if (!confirm('Reset "' + p.name + '" to its default placeholder prompt? Your current prompt text in it will be lost.')) return;
+        if (!isSeedPreset(p.id)) { toast('Only built-in presets have a default to reset to.', 'warning'); return; }
+        if (!confirm('Reset "' + p.name + '" to its built-in default prompt? Your current prompt text in it will be lost.')) return;
         p.prompt = DEFAULT_PRESET_PROMPTS[p.id];
         persist();
         renderAll();
@@ -2503,6 +2717,7 @@
             '      <span class="la_grplbl" title="Document actions">Doc</span>',
             '      <button class="la_btn" id="la_new" title="New empty document">+ New</button>',
             '      <button class="la_btn" id="la_newwb" title="New worldbook (JSON, assigned to the Worldbook Maker preset)">+WB</button>',
+            '      <button class="la_btn" id="la_newsc" title="New Summaryception transplant \u2014 paste a Memory Transplant export; assigned to the Summaryception Auditor preset">+SC</button>',
             '      <button class="la_btn" id="la_dren" title="Rename document">Ren</button>',
             '      <button class="la_btn" id="la_dup" title="Duplicate document (text + preset, fresh conversation)">Dup</button>',
             '      <button class="la_btn" id="la_ddel" title="Delete document">Del</button>',
@@ -2604,6 +2819,7 @@
         el('la_sessdel').addEventListener('click', () => deleteSession());
         el('la_new').addEventListener('click', () => newDoc());
         el('la_newwb').addEventListener('click', () => newWorldbook());
+        el('la_newsc').addEventListener('click', () => newTransplantDoc());
         el('la_dren').addEventListener('click', () => renameDoc());
         el('la_dup').addEventListener('click', () => dupDoc());
         el('la_ddel').addEventListener('click', () => deleteDoc());
@@ -3417,6 +3633,12 @@
         return out;
     }
 
+    function docLooksLikeTransplant(doc) {
+        if (!doc) return false;
+        if (doc.presetId === PRESET_SC_ID) return true;
+        return /<!--\s*SC-(TRANSPLANT|NOTEPAD|LEDGER|SNIPPET|PIN)[\s{]/.test(String(doc.text || ''));
+    }
+
     function docLooksLikeWorldbook(doc) {
         if (!doc) return false;
         if (doc.presetId === PRESET_WB_ID) return true;
@@ -3593,6 +3815,19 @@
                 body.appendChild(mk('div', 'opacity:0.75;font-size:0.85em;margin:2px 0 6px 14px;', rpt.jsonFixable ? 'Auto-fixable (escape raw line breaks / drop trailing commas).' : 'Not auto-fixable \u2014 likely an unescaped double-quote inside a value; open View to fix it by hand near the reported position.'));
             }
         } else body.appendChild(mk('div', 'opacity:0.55;font-size:0.85em;padding:6px 0;', 'Not a JSON document \u2014 JSON check skipped.'));
+
+        if (docLooksLikeTransplant(doc)) {
+            const tl = lintTransplant(doc.text || '');
+            body.appendChild(mk('div', 'margin-top:12px;font-weight:700;', '\uD83E\uDDE0 Summaryception transplant \u2014 what the importer will read'));
+            body.appendChild(row('Inventory: ' + tl.counts.snippets + ' snippet(s), ' + tl.counts.ledger + ' ledger character(s), ' + tl.counts.pins + ' pin(s), notepad ' + (tl.counts.notepad ? 'yes' : 'no') + (tl.counts.meta ? '' : ', no SC-TRANSPLANT meta'), true));
+            if (!tl.issues.length) body.appendChild(row('All markers round-trip losslessly through the Summaryception importer.', true));
+            else {
+                body.appendChild(row(tl.issues.length + ' marker issue(s) \u2014 the Summaryception importer would silently drop or misfile these:', false));
+                const tlist = mk('div', 'font-family:monospace;font-size:0.82em;margin:4px 0 10px 14px;');
+                tl.issues.forEach(h => tlist.appendChild(mk('div', 'padding:2px 0;opacity:0.9;color:' + (h.sev === 'error' ? '#e06c6c' : '#e6a94a') + ';', 'line ' + h.line + ' [' + h.sev + '] ' + h.msg)));
+                body.appendChild(tlist);
+            }
+        }
 
         const btnRow = mk('div', 'display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;');
         const mkBtn = (label, bg, fn) => { const b = mk('button', 'cursor:pointer;border:1px solid rgba(255,255,255,0.3);background:' + bg + ';color:inherit;border-radius:8px;padding:10px 14px;font-size:0.9em;', label); b.addEventListener('click', fn); return b; };
@@ -4083,7 +4318,7 @@
             normalizePosition, positionToST,
             numOr, estTokens, worldbookTokenStats, serializeWorldbook, pickContextWindow, contextTokenBreakdown,
             parseSupersede, formatPendingProposals,
-            docLint, collapseInlineSpaces, repairDocJson,
+            docLint, collapseInlineSpaces, repairDocJson, lintTransplant, docLooksLikeTransplant, isSeedPreset,
             stripTrailingCommasOutsideStrings, escapeRawControlsInStrings,
             adjustStampsForSplice, editIdentityKey, findAutoSuperseded, resolveSpanConflicts, buildBackupPayload, parseBackupPayload, mergeBackupIntoSettings, buildMessages, blockTokensFor, docBlock, refBlock,
             getSettings: () => settings,

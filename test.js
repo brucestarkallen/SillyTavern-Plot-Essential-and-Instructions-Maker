@@ -771,3 +771,138 @@ console.log('== backup round-trip + strict parse ==');
     D.mergeBackupIntoSettings(live2, partial, mkid);
     ok(live2.docs[0].refs.length === 0, 'a ref to a doc missing from the backup is dropped, never dangles');
 })();
+
+// ── v0.14.0: Summaryception transplant mode ─────────────────────────
+console.log('== summaryception: seeded preset + protection ==');
+(function () {
+    const ps = D.getSettings().presets;
+    const sc = ps.find(p => p.id === 'seed_sc_auditor');
+    ok(!!sc && sc.name === 'Summaryception Auditor', 'Summaryception Auditor preset seeded', ps.map(p => p.id));
+    ok(sc && /SC-SNIPPET/.test(sc.prompt) && /SC-LEDGER/.test(sc.prompt) && /SC-PIN/.test(sc.prompt) && /SC-NOTEPAD/.test(sc.prompt), 'brief teaches every block type');
+    ok(sc && /M-RECORD/.test(sc.prompt) && /M-EPISTEMIC/.test(sc.prompt) && /M-SCAN/.test(sc.prompt) && /M-EYE/.test(sc.prompt) && /M-TAGS/.test(sc.prompt), 'all five mandates present');
+    ok(sc && /\*audit/.test(sc.prompt) && /\*fix/.test(sc.prompt) && /\*cleanup/.test(sc.prompt) && /\*optimize/.test(sc.prompt) && /\*brief/.test(sc.prompt), 'all five commands present');
+    ok(sc && /ZERO-LOSS VERIFICATION/.test(sc.prompt) && /4-Question Test/.test(sc.prompt) && /SEQUENTIAL AGGREGATION/.test(sc.prompt) && /NOTATION COMPRESSION/.test(sc.prompt), 'optimize keeps the full technique ladder + verification');
+    ok(sc && /insert_after/.test(sc.prompt) && /replace_all/.test(sc.prompt) && /never produce downloads/.test(sc.prompt), 'delivery section is docedits-native, not chat-paste');
+    ok(sc && /final body line PLUS the <!-- \/SC-SNIPPET -->/.test(sc.prompt), 'teaches the unique multi-line anchor for adding blocks (closers alone repeat)');
+    ok(D.isSeedPreset('seed_sc_auditor') && D.isSeedPreset('seed_worldbook_maker') && D.isSeedPreset('seed_pe_maker') && D.isSeedPreset('seed_ai_instructions'), 'all four seeded presets protected (WB delete/reset gap closed)');
+    ok(!D.isSeedPreset('user_custom_x') && !D.isSeedPreset(''), 'user presets not seed-protected');
+})();
+
+console.log('== summaryception: docLooksLikeTransplant ==');
+(function () {
+    ok(D.docLooksLikeTransplant({ presetId: 'seed_sc_auditor', text: '' }) === true, 'transplant by preset');
+    ok(D.docLooksLikeTransplant({ presetId: 'other', text: 'x\n<!-- SC-SNIPPET {"turns":"1-2"} -->\nhi\n<!-- /SC-SNIPPET -->' }) === true, 'transplant by marker sniff');
+    ok(D.docLooksLikeTransplant({ presetId: 'other', text: '# md\nSC-SNIPPET mentioned in prose only' }) === false, 'prose mention is not a transplant');
+    ok(D.docLooksLikeTransplant(null) === false, 'null doc safe');
+})();
+
+console.log('== summaryception: lintTransplant mirrors the importer ==');
+(function () {
+    // A clean transplant shaped exactly like Summaryception's buildTransplantExport output.
+    const good = [
+        '# SUMMARYCEPTION MEMORY TRANSPLANT',
+        '<!-- SC-TRANSPLANT {"v":1} -->',
+        '',
+        '## NOTEPAD (author STARTING canon)',
+        '<!-- SC-NOTEPAD -->',
+        'World rule: mana is finite.',
+        '<!-- /SC-NOTEPAD -->',
+        '',
+        '## CHARACTER LEDGER',
+        '<!-- SC-LEDGER {"name":"Alaric","t":42} -->',
+        'CORE: exiled prince under a false name',
+        'STATE: hiding in the academy',
+        'ARC: pride -> patience',
+        'THREADS: the signet ring',
+        '<!-- /SC-LEDGER -->',
+        '',
+        '## MEMORY SNIPPETS (story order)',
+        '<!-- SC-SNIPPET {"turns":"1-6"} -->',
+        'Alaric enrolls under a false name.',
+        '<!-- SC-DETAIL -->',
+        'He forges papers with the archivist.',
+        '<!-- /SC-SNIPPET -->',
+        '',
+        '<!-- SC-SNIPPET {"turns":"7-9"} -->',
+        'He wins the duel by feint.',
+        '<!-- /SC-SNIPPET -->',
+        '',
+        '## PINNED QUOTES (verbatim)',
+        '<!-- SC-PIN {"label":"the vow"} -->',
+        '"I will not kneel twice."',
+        '<!-- /SC-PIN -->',
+    ].join('\n');
+    const g = D.lintTransplant(good);
+    ok(g.ok === true && g.issues.length === 0, 'clean export lints clean', g.issues);
+    ok(g.counts.snippets === 2 && g.counts.ledger === 1 && g.counts.pins === 1 && g.counts.notepad === true && g.counts.meta === true, 'inventory matches importer counts', g.counts);
+
+    // Typo'd opener kind: block never opens; its own closer goes dead; importer count drops.
+    const typo = D.lintTransplant(good.replace('<!-- SC-SNIPPET {"turns":"7-9"} -->', '<!-- SC-SNIPPETS {"turns":"7-9"} -->'));
+    ok(typo.ok === false && typo.issues.some(i => i.sev === 'error' && /Unknown marker SC-SNIPPETS/.test(i.msg)), 'typo\'d marker kind flagged as error', typo.issues);
+    ok(typo.counts.snippets === 1, 'count reflects the importer truly dropping the mistyped snippet', typo.counts);
+    ok(typo.issues.some(i => /no matching open block/.test(i.msg)), 'the orphaned closer is reported dead');
+
+    // Case-mismatch is its own message: importer is case-sensitive.
+    const lc = D.lintTransplant(good.replace('<!-- SC-PIN {"label":"the vow"} -->', '<!-- sc-pin {"label":"the vow"} -->'));
+    ok(lc.ok === false && lc.issues.some(i => /case-mismatched/.test(i.msg) && /SC-PIN/.test(i.msg)), 'lowercase marker flagged with the case-sensitivity cause', lc.issues);
+    ok(lc.counts.pins === 0, 'case-mismatched pin is not counted (importer would drop it)');
+
+    // Broken LEDGER payload: the whole dossier is dropped by the importer.
+    const badLed = D.lintTransplant(good.replace('{"name":"Alaric","t":42}', '{"name":"Alaric",t:42}'));
+    ok(badLed.ok === false && badLed.issues.some(i => i.sev === 'error' && /DROPS this entire dossier/.test(i.msg)) && badLed.counts.ledger === 0, 'broken ledger payload = dossier dropped, flagged critical', badLed.issues);
+
+    // Nameless ledger payload: also dropped.
+    const noName = D.lintTransplant(good.replace('{"name":"Alaric","t":42}', '{"t":42}'));
+    ok(noName.ok === false && noName.issues.some(i => /no "name" in its payload/.test(i.msg)) && noName.counts.ledger === 0, 'nameless ledger dropped + flagged');
+
+    // Ledger with no CORE/STATE/ARC/THREADS lines: importer yields empty entry and drops it.
+    const noFields = D.lintTransplant(good
+        .replace('CORE: exiled prince under a false name\n', 'just prose, no field labels\n')
+        .replace('STATE: hiding in the academy\n', '')
+        .replace('ARC: pride -> patience\n', '')
+        .replace('THREADS: the signet ring\n', ''));
+    ok(noFields.ok === false && noFields.issues.some(i => /none of CORE/.test(i.msg)) && noFields.counts.ledger === 0, 'fieldless ledger dropped + flagged', noFields.issues);
+
+    // Duplicate ledger names: the later silently overwrites the earlier.
+    const dup = D.lintTransplant(good.replace('<!-- /SC-LEDGER -->', '<!-- /SC-LEDGER -->\n<!-- SC-LEDGER {"name":"Alaric"} -->\nCORE: someone else entirely\n<!-- /SC-LEDGER -->'));
+    ok(dup.ok === false && dup.issues.some(i => /Duplicate ledger name "Alaric"/.test(i.msg) && /OVERWRITES/.test(i.msg)), 'duplicate ledger name flagged as silent overwrite', dup.issues);
+
+    // Missing closer: tolerated by the importer (body runs to next opener) but flagged — trailing prose is swallowed.
+    const uncl = D.lintTransplant(good.replace('<!-- /SC-NOTEPAD -->\n', ''));
+    ok(uncl.ok === true && uncl.issues.some(i => i.sev === 'warn' && /SC-NOTEPAD has no closing marker/.test(i.msg)), 'unclosed block is a warning, not an error (importer tolerates it)', uncl.issues);
+    ok(uncl.counts.notepad === true && uncl.counts.ledger === 1, 'unclosed notepad still imports; following blocks unaffected');
+
+    // Empty snippet (detail-only): importer drops it, detail included.
+    const emptySn = D.lintTransplant(good.replace('He wins the duel by feint.', '  '));
+    ok(emptySn.ok === false && emptySn.issues.some(i => /Empty SC-SNIPPET/.test(i.msg)) && emptySn.counts.snippets === 1, 'empty snippet flagged + not counted', emptySn.issues);
+    const detOnly = D.lintTransplant(good.replace('Alaric enrolls under a false name.\n', ''));
+    ok(detOnly.ok === false && detOnly.issues.some(i => /detail-only/.test(i.msg)), 'detail-only snippet: flags that the detail is lost with it', detOnly.issues);
+
+    // Stray closer of a different kind inside an open block: junk text in that block AND a broken sibling.
+    const stray = D.lintTransplant(good.replace('STATE: hiding in the academy', 'STATE: hiding in the academy\n<!-- /SC-SNIPPET -->'));
+    ok(stray.issues.some(i => /Stray closer \/SC-SNIPPET inside an open SC-LEDGER/.test(i.msg)), 'foreign closer inside a block flagged as junk-in-block', stray.issues);
+
+    // SC-DETAIL outside any snippet: dead marker.
+    const deadDet = D.lintTransplant(good.replace('<!-- /SC-PIN -->', '<!-- /SC-PIN -->\n<!-- SC-DETAIL -->\norphan detail text'));
+    ok(deadDet.issues.some(i => /SC-DETAIL marker outside any snippet/.test(i.msg)), 'orphan SC-DETAIL flagged dead', deadDet.issues);
+
+    // SC-DETAIL with a payload: the importer's detail regex will not match it.
+    const detPay = D.lintTransplant(good.replace('<!-- SC-DETAIL -->', '<!-- SC-DETAIL {"x":1} -->'));
+    ok(detPay.ok === false && detPay.issues.some(i => /SC-DETAIL must carry no payload/.test(i.msg)), 'payloaded SC-DETAIL flagged (importer would not recognize it)', detPay.issues);
+
+    // Malformed marker (payload without braces): invisible to the importer entirely.
+    const malformed = D.lintTransplant(good.replace('<!-- SC-SNIPPET {"turns":"7-9"} -->', '<!-- SC-SNIPPET turns=7-9 -->'));
+    ok(malformed.ok === false && malformed.issues.some(i => /Malformed SC marker/.test(i.msg)) && malformed.counts.snippets === 1, 'brace-less payload marker flagged; importer would not open the block', malformed.issues);
+
+    // Multiple notepads: later overwrites earlier.
+    const twoNp = D.lintTransplant(good.replace('<!-- /SC-NOTEPAD -->', '<!-- /SC-NOTEPAD -->\n<!-- SC-NOTEPAD -->\nsecond notepad\n<!-- /SC-NOTEPAD -->'));
+    ok(twoNp.issues.some(i => /Multiple SC-NOTEPAD/.test(i.msg)), 'duplicate notepad flagged as silent overwrite', twoNp.issues);
+
+    // Empty document / no markers: clean nothing, not an error state.
+    const empty = D.lintTransplant('');
+    ok(empty.ok === true && empty.counts.snippets === 0 && empty.counts.meta === false, 'empty text lints as an empty, ok inventory');
+
+    // CRLF input is normalized like the importer does.
+    const crlf = D.lintTransplant(good.replace(/\n/g, '\r\n'));
+    ok(crlf.ok === true && crlf.counts.snippets === 2 && crlf.counts.ledger === 1, 'CRLF transplant parses identically', crlf.counts);
+})();
