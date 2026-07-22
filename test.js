@@ -906,3 +906,41 @@ console.log('== summaryception: lintTransplant mirrors the importer ==');
     const crlf = D.lintTransplant(good.replace(/\n/g, '\r\n'));
     ok(crlf.ok === true && crlf.counts.snippets === 2 && crlf.counts.ledger === 1, 'CRLF transplant parses identically', crlf.counts);
 })();
+
+
+(function () {
+    console.log('TEST: transplant lint performance class (main-thread freeze guard)');
+    const L = D.lintTransplant;
+    let t0 = Date.now();
+    let r = L('<!--x'.repeat(30000)); // 150KB of stray comment opens, no sc-
+    let ms = Date.now() - t0;
+    ok(r.issues.length === 0 && ms < 250, 'comment spam (150KB) lints linearly with no false issues', ms + 'ms issues=' + r.issues.length);
+    t0 = Date.now();
+    r = L('<!-- sc-' + 'a'.repeat(120000)); // unterminated sc- comment
+    ms = Date.now() - t0;
+    ok(r.issues.length === 1 && /Malformed/.test(r.issues[0].msg) && ms < 250, 'unterminated sc- comment flagged as malformed, fast', ms + 'ms ' + JSON.stringify(r.issues));
+    t0 = Date.now();
+    r = L(('<!-- sc-pin -->\n').repeat(3000)); // 3000 case-mismatch issues
+    ms = Date.now() - t0;
+    ok(r.issues.length === 3000 && ms < 250, '3000-issue doc line-numbered via index, fast', ms + 'ms issues=' + r.issues.length);
+    ok(r.issues[2999].line === 3000, 'line numbers exact at scale', r.issues[2999] && r.issues[2999].line);
+    const big = '<!-- SC-TRANSPLANT {"v":1} -->\n' + Array.from({ length: 1500 }, (_, i) => '<!-- SC-SNIPPET {"turns":"' + i + '-' + i + '"} -->\nbeat ' + i + '\n<!-- /SC-SNIPPET -->').join('\n');
+    t0 = Date.now();
+    r = L(big);
+    ms = Date.now() - t0;
+    ok(r.ok && r.counts.snippets === 1500 && ms < 400, '1500-snippet transplant clean and fast', ms + 'ms ' + r.counts.snippets + ' ' + JSON.stringify(r.issues.slice(0, 2)));
+})();
+
+(function () {
+    console.log('TEST: stray comment shells around valid markers');
+    const L = D.lintTransplant;
+    // benign shell sharing the marker closer: marker imports, shell is dead prose — clean
+    let r = L('<!-- junk <!-- SC-PIN {"label":"q"} -->\nquote\n<!-- /SC-PIN -->');
+    ok(r.counts.pins === 1 && r.issues.length === 0, 'benign shell around a valid pin: pin counted, no noise', JSON.stringify(r));
+    // sc--mentioning shell: that sc- text is outside the imported marker — flag it
+    r = L('<!-- sc-old <!-- SC-PIN {"label":"q"} -->\nquote\n<!-- /SC-PIN -->');
+    ok(r.counts.pins === 1 && r.issues.length === 1 && /Malformed/.test(r.issues[0].msg), 'sc--mentioning shell flagged, pin still counted', JSON.stringify(r));
+    // comment containing > then closing: importer cannot parse it — flagged now (old scan missed this shape)
+    r = L('<!-- SC-PIN {"label":"a>b"} bad -->');
+    ok(r.issues.length === 1 && /Malformed/.test(r.issues[0].msg), 'unparseable sc- comment with > inside is flagged', JSON.stringify(r.issues));
+})();

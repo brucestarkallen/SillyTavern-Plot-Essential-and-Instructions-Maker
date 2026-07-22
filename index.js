@@ -24,7 +24,7 @@
     // it orphans all real user data. The rename only touched display strings.
     const MODULE = 'loreAgent';
     const LOG = '[LoreAgent]';
-    const VERSION = '0.14.0';
+    const VERSION = '0.14.1';
 
     // ------------------------------------------------------------------
     // Seeded presets (placeholders — paste your real instructions via the
@@ -817,7 +817,16 @@
         const t = String(text ?? '').replace(/\r\n?/g, '\n');
         const KINDS = ['TRANSPLANT', 'NOTEPAD', 'LEDGER', 'SNIPPET', 'PIN'];
         const out = { ok: true, counts: { snippets: 0, ledger: 0, pins: 0, notepad: false, meta: false }, issues: [] };
-        const lineAt = (idx) => t.slice(0, idx).split('\n').length;
+        // Newline index once; lineAt is a binary search. The old per-issue
+        // t.slice(0, idx).split() was O(doc) per issue — unbounded main-thread
+        // work on a vandalized paste (issues scale with damage).
+        const nls = [-1];
+        for (let i = 0; i < t.length; i++) if (t.charCodeAt(i) === 10) nls.push(i);
+        const lineAt = (idx) => {
+            let lo = 0, hi = nls.length - 1;
+            while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (nls[mid] < idx) lo = mid; else hi = mid - 1; }
+            return lo + 1;
+        };
         const issue = (sev, msg, idx) => out.issues.push({ sev, msg, line: lineAt(idx) });
         // Every comment that *looks like* an SC marker, well-formed or not.
         // Detection is case-INsensitive on purpose: the importer is case-
@@ -834,15 +843,33 @@
             marks.push({ closer: m[1] === '/', prefix: m[2], kind: m[3], exact, json: m[4] || '', idx: m.index, end: m.index + m[0].length });
             wellFormed.push([m.index, m.index + m[0].length]);
         }
-        // Comments that mention SC- but did not parse as a marker at all (e.g. a
-        // payload without braces): invisible to the importer — the "block" never
-        // opens and its text silently merges into the previous block.
-        const loose = /<!--[^>]*\b[Ss][Cc]-[^>]*-->/g;
-        while ((m = loose.exec(t)) !== null) {
-            const a = m.index, b = m.index + m[0].length;
-            if (!wellFormed.some(w => a >= w[0] && b <= w[1])) {
-                issue('error', 'Malformed SC marker — the importer will not recognize it, so no block opens/closes here: ' + m[0].slice(0, 60), a);
+        // Comments that mention SC- but did not parse as a marker (a payload
+        // without braces, an unterminated comment, junk before a nested valid
+        // marker): invisible to the importer — no block opens/closes there.
+        // Linear indexOf walk. The previous /<!--[^>]*\bSC-[^>]*-->/ scan was
+        // quadratic (nested unbounded classes backtrack per split): 150KB of
+        // stray "<!--" froze the main thread for ~2s, scaling to minutes on a
+        // large paste — a platform-freeze class on Android WebView. Never
+        // reintroduce nested [^>]*…[^>]* scans here; this walk is O(n).
+        let ci = 0, wi = 0;
+        while ((ci = t.indexOf('<!--', ci)) !== -1) {
+            const ce = t.indexOf('-->', ci + 4);
+            const end = ce === -1 ? t.length : ce + 3;
+            // Remainder = comment span minus any well-formed marker subspans
+            // (a valid marker sharing this span's closer is still imported;
+            // only the stray shell around it is dead text).
+            while (wi < wellFormed.length && wellFormed[wi][1] <= ci) wi++;
+            let rem = '', ppos = ci;
+            for (let k = wi; k < wellFormed.length && wellFormed[k][0] < end; k++) {
+                const w = wellFormed[k];
+                if (w[0] > ppos) rem += t.slice(ppos, Math.min(w[0], end));
+                ppos = Math.max(ppos, w[1]);
             }
+            if (ppos < end) rem += t.slice(ppos, end);
+            if (/\bsc-/i.test(rem)) {
+                issue('error', 'Malformed SC marker — the importer will not recognize it, so no block opens/closes here: ' + t.slice(ci, end).slice(0, 60), ci);
+            }
+            ci = end > ci ? end : ci + 4;
         }
         for (const mk of marks) {
             if (mk.exact) {
@@ -3824,7 +3851,8 @@
             else {
                 body.appendChild(row(tl.issues.length + ' marker issue(s) \u2014 the Summaryception importer would silently drop or misfile these:', false));
                 const tlist = mk('div', 'font-family:monospace;font-size:0.82em;margin:4px 0 10px 14px;');
-                tl.issues.forEach(h => tlist.appendChild(mk('div', 'padding:2px 0;opacity:0.9;color:' + (h.sev === 'error' ? '#e06c6c' : '#e6a94a') + ';', 'line ' + h.line + ' [' + h.sev + '] ' + h.msg)));
+                tl.issues.slice(0, 200).forEach(h => tlist.appendChild(mk('div', 'padding:2px 0;opacity:0.9;color:' + (h.sev === 'error' ? '#e06c6c' : '#e6a94a') + ';', 'line ' + h.line + ' [' + h.sev + '] ' + h.msg)));
+                if (tl.issues.length > 200) tlist.appendChild(mk('div', 'padding:2px 0;opacity:0.7;', '\u2026and ' + (tl.issues.length - 200) + ' more \u2014 fix the above and re-run \uD83D\uDD0D Check.'));
                 body.appendChild(tlist);
             }
         }
